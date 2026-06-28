@@ -1,0 +1,22 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Artefakty budowania aplikacji
+build/
+
+# macOS / iCloud
+.DS_Store
+*.icloud
+._*
+.Spotlight-V100
+.Trashes
+
+# Xcode (gdyby ktoś otworzył w Xcode)
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+
+# Modele (duże; pobierane na żądanie)
+*.bin

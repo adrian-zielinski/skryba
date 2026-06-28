@@ -1,0 +1,22 @@
+Skryba bundles and builds on third-party open-source software.
+
+================================================================================
+whisper.cpp
+================================================================================
+High-performance inference of OpenAI's Whisper model in C/C++.
+Copyright (c) 2023-2025 The ggml authors (Georgi Gerganov and contributors).
+Licensed under the MIT License.
+https://github.com/ggml-org/whisper.cpp
+
+Skryba vendors a prebuilt `whisper.xcframework` (v1.9.1, macOS slice) under
+Frameworks/. It provides the Metal-accelerated transcription engine.
+
+================================================================================
+Whisper models (ggml format)
+================================================================================
+The speech-recognition models are downloaded on demand from:
+https://huggingface.co/ggml-org/whisper.cpp
+
+The underlying Whisper model is by OpenAI, released under the MIT License.
+Models are not redistributed with this repository; the app fetches them at
+runtime to the user's Application Support directory.
