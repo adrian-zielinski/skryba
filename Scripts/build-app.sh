@@ -15,6 +15,11 @@ VERSION="1.0.0"
 OUT_DIR="$ROOT/build"
 STAGE="$(mktemp -d)/$APP_NAME.app"
 
+if [ ! -f "$ROOT/Resources/AppIcon.icns" ]; then
+    echo "▸ Generuję ikonę..."
+    bash "$ROOT/Scripts/make-icon.sh" || true
+fi
+
 echo "▸ Kompilacja (release)..."
 swift build -c release --product skryba
 
