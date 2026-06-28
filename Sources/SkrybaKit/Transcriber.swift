@@ -32,7 +32,8 @@ public final class Transcriber {
         format: OutputFormat = .markdown,
         translate: Bool = false,
         onDecodeStarted: (() -> Void)? = nil,
-        onProgress: ((Double) -> Void)? = nil
+        onProgress: ((Double) -> Void)? = nil,
+        shouldCancel: (() -> Bool)? = nil
     ) async throws -> TranscriptionResult {
         onDecodeStarted?()
         let samples = try await AudioDecoder.decode(url: url)
@@ -40,7 +41,8 @@ public final class Transcriber {
             samples: samples,
             language: language,
             translate: translate,
-            progress: onProgress)
+            progress: onProgress,
+            shouldCancel: shouldCancel)
         let stem = url.deletingPathExtension().lastPathComponent
         let outputURL = try OutputWriter.write(
             segments: segments,

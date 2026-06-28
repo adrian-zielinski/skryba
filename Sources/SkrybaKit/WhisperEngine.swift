@@ -20,6 +20,12 @@ private final class ProgressBox {
     init(_ callback: @escaping (Double) -> Void) { self.callback = callback }
 }
 
+/// Pudełko przenoszące zapytanie o anulowanie do C-callbacku whisper_full.
+private final class AbortBox {
+    let shouldCancel: () -> Bool
+    init(_ shouldCancel: @escaping () -> Bool) { self.shouldCancel = shouldCancel }
+}
+
 /// Opakowanie silnika whisper.cpp. Ładuje model raz i pozwala transkrybować
 /// wiele plików tym samym kontekstem (ładowanie modelu jest kosztowne).
 ///
@@ -70,15 +76,19 @@ public final class WhisperEngine {
     ///   - translate: tłumacz na angielski zamiast transkrypcji.
     ///   - threads: liczba wątków.
     ///   - progress: opcjonalne wywołania zwrotne 0.0–1.0.
+    ///   - shouldCancel: opcjonalne zapytanie wołane w trakcie; zwróć `true`, aby
+    ///     natychmiast przerwać (whisper_full kończy się i metoda rzuca `.cancelled`).
     public func transcribe(
         samples: [Float],
         language: String = "auto",
         translate: Bool = false,
         threads: Int = WhisperEngine.defaultThreadCount,
-        progress: ((Double) -> Void)? = nil
+        progress: ((Double) -> Void)? = nil,
+        shouldCancel: (() -> Bool)? = nil
     ) throws -> [TranscriptSegment] {
 
         guard !samples.isEmpty else { return [] }
+        if shouldCancel?() == true { throw SkrybaError.cancelled }
 
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         params.print_realtime = false
@@ -101,6 +111,16 @@ public final class WhisperEngine {
             params.progress_callback_user_data = Unmanaged.passUnretained(box).toOpaque()
         }
 
+        // Most do callbacku anulowania (utrzymuj `abortBox` żywym do końca whisper_full).
+        let abortBox = shouldCancel.map { AbortBox($0) }
+        if let abortBox {
+            params.abort_callback = { user in
+                guard let user else { return false }
+                return Unmanaged<AbortBox>.fromOpaque(user).takeUnretainedValue().shouldCancel()
+            }
+            params.abort_callback_user_data = Unmanaged.passUnretained(abortBox).toOpaque()
+        }
+
         let status: Int32 = language.withCString { langPtr in
             params.language = langPtr
             params.detect_language = (language == "auto")
@@ -109,7 +129,9 @@ public final class WhisperEngine {
             }
         }
         withExtendedLifetime(box) {}
+        withExtendedLifetime(abortBox) {}
 
+        if shouldCancel?() == true { throw SkrybaError.cancelled }
         guard status == 0 else {
             throw SkrybaError.transcriptionFailed(Int(status))
         }

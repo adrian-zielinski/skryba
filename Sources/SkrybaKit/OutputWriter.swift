@@ -59,7 +59,14 @@ public enum OutputWriter {
         language: String
     ) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent(stem).appendingPathExtension(format.fileExtension)
+        // Unikaj cichego nadpisania pliku o tej samej nazwie (np. dwa nagrania
+        // o identycznej nazwie bazowej z różnych folderów): dodaj sufiks.
+        var url = directory.appendingPathComponent(stem).appendingPathExtension(format.fileExtension)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = directory.appendingPathComponent("\(stem)-\(counter)").appendingPathExtension(format.fileExtension)
+            counter += 1
+        }
         let content = render(
             segments: segments, format: format,
             sourceName: sourceName, modelName: modelName, language: language)

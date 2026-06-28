@@ -20,8 +20,8 @@ public enum AudioDecoder {
             if let ffmpeg = FFmpegDecoder.locate() {
                 return try FFmpegDecoder.decode(url: url, ffmpeg: ffmpeg)
             }
-            // Brak ffmpeg — przekaż czytelny błąd zależny od przyczyny.
-            if case SkrybaError.noAudioTrack = error { throw error }
+            // Brak ffmpeg — zachowaj pierwotną przyczynę, jeśli ją znamy.
+            if error is SkrybaError { throw error }
             throw SkrybaError.unsupportedAudio(url.lastPathComponent)
         }
     }
@@ -74,6 +74,10 @@ public enum AudioDecoder {
         if reader.status == .failed {
             throw reader.error ?? SkrybaError.decodeFailed(url.lastPathComponent)
         }
+        // Pusty wynik traktuj jako porażkę dekodowania — pozwala spróbować ffmpeg.
+        guard !samples.isEmpty else {
+            throw SkrybaError.decodeFailed(url.lastPathComponent)
+        }
         return samples
     }
 }
@@ -115,18 +119,21 @@ enum FFmpegDecoder {
         process.standardError = errPipe
 
         try process.run()
-        // Czytamy stdout w całości; stderr wyciszony (-loglevel quiet), więc nie zablokuje.
+        // Opróżniaj stderr równolegle, by pełny bufor potoku nie zablokował ffmpeg.
+        let errHandle = errPipe.fileHandleForReading
+        DispatchQueue.global().async { _ = errHandle.readDataToEndOfFile() }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
             throw SkrybaError.decodeFailed(url.lastPathComponent)
         }
-        guard !data.isEmpty else {
+        // f32le: długość musi być wielokrotnością rozmiaru Float; kopiujemy bezpiecznie.
+        guard !data.isEmpty, data.count % MemoryLayout<Float>.size == 0 else {
             throw SkrybaError.decodeFailed(url.lastPathComponent)
         }
-        return data.withUnsafeBytes { raw in
-            Array(raw.bindMemory(to: Float.self))
-        }
+        var floats = [Float](repeating: 0, count: data.count / MemoryLayout<Float>.size)
+        _ = floats.withUnsafeMutableBytes { data.copyBytes(to: $0) }
+        return floats
     }
 }

@@ -46,8 +46,24 @@ public final class ModelStore: @unchecked Sendable {
         }
         let downloader = ModelDownloader(progress: progress)
         let downloaded = try await downloader.download(from: model.downloadURL)
-        try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: downloaded, to: dest)
+
+        // Walidacja: model whisper waży dziesiątki MB, nie kilobajty strony błędu.
+        let attrs = try? FileManager.default.attributesOfItem(atPath: downloaded.path)
+        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+        guard size > 1_000_000 else {
+            try? FileManager.default.removeItem(at: downloaded)
+            throw SkrybaError.downloadFailed("pobrany plik jest za mały (\(size) B) — prawdopodobnie błąd serwera")
+        }
+
+        // Atomowo: najpierw do pliku .part w katalogu docelowym, potem zamiana nazwy.
+        let part = dest.appendingPathExtension("part")
+        try? FileManager.default.removeItem(at: part)
+        try FileManager.default.moveItem(at: downloaded, to: part)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            _ = try FileManager.default.replaceItemAt(dest, withItemAt: part)
+        } else {
+            try FileManager.default.moveItem(at: part, to: dest)
+        }
         progress?(1.0)
         return dest
     }
@@ -83,6 +99,11 @@ private final class ModelDownloader: NSObject, URLSessionDownloadDelegate, @unch
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
+        // Nie przenoś ciała błędu (404/redirect) — didCompleteWithError zgłosi błąd.
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            return
+        }
         // Plik tymczasowy znika po powrocie z callbacku — przenieś od razu.
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".bin")

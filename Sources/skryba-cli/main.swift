@@ -66,11 +66,21 @@ while i < args.count {
             print("    \(m.recommendation)")
         }
         exit(0)
-    case "--out": i += 1; if i < args.count { outDir = args[i] }
-    case "--model-id": i += 1; if i < args.count { modelID = args[i] }
-    case "--model": i += 1; if i < args.count { modelPath = args[i] }
-    case "--lang": i += 1; if i < args.count { language = args[i] }
-    case "--format": i += 1; if i < args.count { formatRaw = args[i] }
+    case "--out":
+        guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else { fail("opcja --out wymaga wartości") }
+        i += 1; outDir = args[i]
+    case "--model-id":
+        guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else { fail("opcja --model-id wymaga wartości") }
+        i += 1; modelID = args[i]
+    case "--model":
+        guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else { fail("opcja --model wymaga wartości") }
+        i += 1; modelPath = args[i]
+    case "--lang":
+        guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else { fail("opcja --lang wymaga wartości") }
+        i += 1; language = args[i]
+    case "--format":
+        guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else { fail("opcja --format wymaga wartości") }
+        i += 1; formatRaw = args[i]
     case "--translate": translate = true
     case "--no-gpu": useGPU = false
     default:

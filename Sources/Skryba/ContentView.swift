@@ -162,7 +162,7 @@ struct ContentView: View {
                     Label("Transkrybuj", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.jobs.isEmpty)
+                .disabled(model.jobs.isEmpty || model.downloadingModelID != nil)
             }
         }
         .padding(.horizontal, 12)

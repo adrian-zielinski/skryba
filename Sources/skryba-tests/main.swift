@@ -75,6 +75,21 @@ do {
     t.check(false, "Zapis pliku rzucił błąd: \(error)")
 }
 
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-collision-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let u1 = try OutputWriter.write(segments: segments, to: dir, stem: "kolizja",
+                                    format: .markdown, sourceName: "a.m4a", modelName: "m", language: "pl")
+    let u2 = try OutputWriter.write(segments: segments, to: dir, stem: "kolizja",
+                                    format: .markdown, sourceName: "b.m4a", modelName: "m", language: "pl")
+    t.equal(u1.lastPathComponent, "kolizja.md", "Kolizja: pierwszy bez sufiksu")
+    t.equal(u2.lastPathComponent, "kolizja-2.md", "Kolizja: drugi z sufiksem -2 (brak nadpisania)")
+    let both = FileManager.default.fileExists(atPath: u1.path) && FileManager.default.fileExists(atPath: u2.path)
+    t.check(both, "Kolizja: oba pliki istnieją")
+} catch {
+    t.check(false, "Test kolizji rzucił błąd: \(error)")
+}
+
 // MARK: - ModelCatalog
 
 t.suite("ModelCatalog")
@@ -170,6 +185,16 @@ if let modelPath = ProcessInfo.processInfo.environment["SKRYBA_E2E_MODEL"],
             t.check(!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Transkrypcja niepusta")
             let expected = ["fox", "dog", "quick", "brown", "lazy", "jump"]
             t.check(expected.contains { text.contains($0) }, "Rozpoznano oczekiwane słowo (\(text.prefix(60))...)")
+
+            // Anulowanie: shouldCancel == true ma przerwać i rzucić .cancelled.
+            do {
+                _ = try engine.transcribe(samples: samples, language: "en", shouldCancel: { true })
+                t.check(false, "Anulowanie powinno rzucić .cancelled")
+            } catch SkrybaError.cancelled {
+                t.check(true, "Anulowanie przerywa transkrypcję (.cancelled)")
+            } catch {
+                t.check(false, "Anulowanie rzuciło inny błąd: \(error)")
+            }
         } catch {
             t.check(false, "Silnik rzucił błąd: \(error)")
         }

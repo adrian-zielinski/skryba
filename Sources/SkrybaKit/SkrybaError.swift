@@ -9,6 +9,7 @@ public enum SkrybaError: LocalizedError {
     case unsupportedAudio(String)
     case transcriptionFailed(Int)
     case downloadFailed(String)
+    case cancelled
 
     public var errorDescription: String? {
         switch self {
@@ -26,6 +27,8 @@ public enum SkrybaError: LocalizedError {
             return "Transkrypcja nie powiodła się (kod \(code))"
         case .downloadFailed(let m):
             return "Pobieranie nie powiodło się: \(m)"
+        case .cancelled:
+            return "Anulowano"
         }
     }
 }

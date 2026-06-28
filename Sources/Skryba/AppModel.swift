@@ -38,6 +38,7 @@ final class AppModel: ObservableObject {
 
     let store = ModelStore.shared
     private var queueTask: Task<Void, Never>?
+    private var cancelFlag: CancellationFlag?
 
     static let languages: [(code: String, name: String)] = [
         ("auto", "Wykryj automatycznie"),
@@ -139,17 +140,20 @@ final class AppModel: ObservableObject {
     // MARK: - Uruchomienie
 
     func start() {
-        guard !isProcessing, !jobs.isEmpty else { return }
+        guard !isProcessing, !jobs.isEmpty, downloadingModelID == nil else { return }
         persist()
+        let flag = CancellationFlag()
+        cancelFlag = flag
         isProcessing = true
-        queueTask = Task { await runQueue() }
+        queueTask = Task { await runQueue(cancelFlag: flag) }
     }
 
     func cancel() {
+        cancelFlag?.cancel()
         queueTask?.cancel()
     }
 
-    private func runQueue() async {
+    private func runQueue(cancelFlag: CancellationFlag) async {
         let model = selectedModel
 
         // 1) Upewnij się, że model jest na dysku.
@@ -194,7 +198,7 @@ final class AppModel: ObservableObject {
         let ids = jobs.filter { $0.status != .done }.map(\.id)
         var completed = 0
         for jid in ids {
-            if Task.isCancelled { break }
+            if cancelFlag.isCancelled { break }
             guard let idx = jobs.firstIndex(where: { $0.id == jid }) else { continue }
             let url = jobs[idx].url
             update(jid) { $0.status = .decoding; $0.progress = 0; $0.error = nil }
@@ -208,17 +212,21 @@ final class AppModel: ObservableObject {
                         },
                         onProgress: { p in
                             Task { @MainActor in self.update(jid) { $0.status = .transcribing; $0.progress = p } }
-                        })
+                        },
+                        shouldCancel: { cancelFlag.isCancelled })
                 }.value
                 update(jid) { $0.status = .done; $0.progress = 1; $0.outputURL = result.outputURL }
                 completed += 1
+            } catch SkrybaError.cancelled {
+                update(jid) { $0.status = .waiting; $0.progress = 0 }
+                break
             } catch {
                 update(jid) { $0.status = .failed; $0.error = error.localizedDescription }
             }
         }
 
         isProcessing = false
-        statusMessage = Task.isCancelled
+        statusMessage = cancelFlag.isCancelled
             ? "Przerwano (gotowe: \(completed))"
             : "Gotowe: \(completed)/\(ids.count)"
     }
@@ -255,5 +263,19 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK {
             addFiles(panel.urls)
         }
+    }
+}
+
+/// Wątkowo-bezpieczna flaga anulowania. Ustawiana z głównego wątku (cancel()),
+/// czytana z wątku obliczeń whisper przez abort_callback.
+final class CancellationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return flag
+    }
+    func cancel() {
+        lock.lock(); flag = true; lock.unlock()
     }
 }
