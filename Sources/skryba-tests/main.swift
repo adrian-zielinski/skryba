@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import PDFKit
 import SkrybaKit
 
@@ -303,5 +304,58 @@ do {
     } else { t.skip("brak `zip` — test xlsx") }
 }
 catch { t.check(false, "Test xlsx rzucił błąd: \(error)") }
+
+// MARK: - OCR (obrazy / skany)
+
+t.suite("OCR obrazów i skanów")
+
+func makeTextPNG(_ text: String, to url: URL) -> Bool {
+    let size = NSSize(width: 720, height: 180)
+    let img = NSImage(size: size)
+    img.lockFocus()
+    NSColor.white.setFill()
+    NSRect(origin: .zero, size: size).fill()
+    (text as NSString).draw(at: NSPoint(x: 24, y: 72),
+        withAttributes: [.font: NSFont.systemFont(ofSize: 36), .foregroundColor: NSColor.black])
+    img.unlockFocus()
+    var r = NSRect(origin: .zero, size: size)
+    guard let cg = img.cgImage(forProposedRect: &r, context: nil, hints: nil) else { return false }
+    guard let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { return false }
+    return (try? data.write(to: url)) != nil
+}
+
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-ocr-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let png = base.appendingPathComponent("skan.png")
+    guard makeTextPNG("Konwersja OCR dziala", to: png) else {
+        t.skip("nie udało się wygenerować obrazu testowego"); throw CancellationError()
+    }
+
+    // .image → txt (OCR)
+    let imgTargets = DocumentFormat.targets(for: .image, includeAppleApps: false).map(\.rawValue)
+    t.check(imgTargets.contains("txt") && imgTargets.contains("md"), "Obraz: cele zawierają txt i md")
+
+    let outTxt = try await DocumentConverter.convert(input: png, to: .txt, outputDirectory: base)
+    let ocrText = ((try? String(contentsOf: outTxt, encoding: .utf8)) ?? "").lowercased()
+    t.check(ocrText.contains("ocr") || ocrText.contains("konwersja"),
+            "png→txt (OCR): rozpoznano tekst [\(ocrText.prefix(40))]")
+
+    // skan PDF (strona-obraz, bez warstwy tekstowej) → OCR
+    let scanPDF = base.appendingPathComponent("skan.pdf")
+    if let nsimg = NSImage(contentsOf: png), let page = PDFPage(image: nsimg) {
+        let doc = PDFDocument(); doc.insert(page, at: 0); doc.write(to: scanPDF)
+        let outPdfTxt = try await DocumentConverter.convert(input: scanPDF, to: .txt, outputDirectory: base)
+        let pdfOcr = ((try? String(contentsOf: outPdfTxt, encoding: .utf8)) ?? "").lowercased()
+        t.check(pdfOcr.contains("ocr") || pdfOcr.contains("konwersja"),
+                "skan PDF→txt (OCR): rozpoznano tekst [\(pdfOcr.prefix(40))]")
+    } else {
+        t.skip("nie udało się zbudować PDF-skanu")
+    }
+}
+catch is CancellationError {}
+catch { t.check(false, "Test OCR rzucił błąd: \(error)") }
 
 t.finish()

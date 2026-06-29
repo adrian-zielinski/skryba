@@ -63,11 +63,19 @@ public enum DocumentConverter {
             }
         case .pdf:
             guard let doc = PDFDocument(url: url) else { throw SkrybaError.documentReadFailed(url.lastPathComponent) }
-            return NSAttributedString(string: doc.string ?? "")
+            let text = (doc.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            // Skan / PDF bez warstwy tekstowej → OCR stron.
+            if text.count < max(20, doc.pageCount * 5) {
+                let ocr = OCR.recognizePDF(url)
+                if ocr.count > text.count { return NSAttributedString(string: ocr) }
+            }
+            return NSAttributedString(string: text)
         case .pptx, .xlsx:
             return NSAttributedString(string: try OfficeText.extractText(from: url, format: format))
         case .key, .numbers, .pages:
             return NSAttributedString(string: try iWorkBridge.extractText(from: url, format: format, shouldCancel: shouldCancel))
+        case .image:
+            return NSAttributedString(string: try OCR.recognizeImageFile(url))
         }
     }
 
@@ -97,7 +105,7 @@ public enum DocumentConverter {
             try data.write(to: url)
         case .pdf:
             try PDFRenderer.pdfData(from: attr).write(to: url)
-        case .pptx, .xlsx, .key, .numbers, .pages:
+        case .pptx, .xlsx, .key, .numbers, .pages, .image:
             throw SkrybaError.unsupportedTarget(format.displayName)
         }
     }

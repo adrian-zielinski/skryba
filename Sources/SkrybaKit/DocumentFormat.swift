@@ -5,6 +5,7 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
     case md, txt, rtf, html, docx, odt, pdf      // dokumenty tekstowe
     case pptx, xlsx                              // Office: prezentacja / arkusz
     case key, numbers, pages                     // Apple iWork (wymaga apki)
+    case image                                   // obraz/skan (OCR) — tylko źródło
 
     public var id: String { rawValue }
 
@@ -24,10 +25,11 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
         case .key: return "Keynote (.key)"
         case .numbers: return "Numbers (.numbers)"
         case .pages: return "Pages (.pages)"
+        case .image: return "Obraz / skan (OCR)"
         }
     }
 
-    public enum Category: Sendable { case text, presentation, spreadsheet, iwork }
+    public enum Category: Sendable { case text, presentation, spreadsheet, iwork, image }
 
     public var category: Category {
         switch self {
@@ -35,13 +37,14 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
         case .pptx: return .presentation
         case .xlsx: return .spreadsheet
         case .key, .numbers, .pages: return .iwork
+        case .image: return .image
         }
     }
 
     /// Czy potrafimy odczytać ten format natywnie (bez aplikacji Apple).
     public var nativeReadable: Bool {
         switch self {
-        case .md, .txt, .rtf, .html, .docx, .odt, .pdf, .pptx, .xlsx: return true
+        case .md, .txt, .rtf, .html, .docx, .odt, .pdf, .pptx, .xlsx, .image: return true
         case .key, .numbers, .pages: return false
         }
     }
@@ -52,7 +55,7 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
     public var nativeWritable: Bool {
         switch self {
         case .md, .txt, .rtf, .html, .docx, .odt, .pdf: return true
-        case .pptx, .xlsx, .key, .numbers, .pages: return false
+        case .pptx, .xlsx, .key, .numbers, .pages, .image: return false
         }
     }
 
@@ -87,6 +90,8 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
         case "key": return .key
         case "numbers": return .numbers
         case "pages": return .pages
+        case "png", "jpg", "jpeg", "heic", "heif", "tiff", "tif", "gif", "bmp", "webp":
+            return .image
         default: return nil
         }
     }

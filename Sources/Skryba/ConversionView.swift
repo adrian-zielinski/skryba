@@ -54,7 +54,7 @@ struct ConversionView: View {
                 .foregroundStyle(.secondary)
             Text("Przeciągnij dokument do konwersji")
                 .font(.title3)
-            Text("PDF, Word, Markdown, RTF, HTML, ODT, PowerPoint, Excel, Keynote, Numbers, Pages.\nApka wykryje format i zapyta, na co przekonwertować.")
+            Text("PDF, Word, Markdown, RTF, HTML, ODT, PowerPoint, Excel, Keynote, Numbers, Pages,\nobrazy i skany (OCR). Apka wykryje format i zapyta, na co przekonwertować.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

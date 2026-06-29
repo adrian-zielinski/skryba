@@ -70,6 +70,7 @@ Druga zakładka działa jak transkrypcja, tylko zamiast modelu wybierasz **forma
 - **Pełna konwersja w obie strony:** Markdown, Word (DOCX), PDF, RTF, HTML, tekst (TXT), OpenDocument (ODT). Silnik natywny macOS, bez zależności.
 - **Odczyt z Office:** PowerPoint (PPTX) i Excel (XLSX) — Skryba wyciąga z nich tekst do dowolnego formatu tekstowego (np. „wrzuć prezentację → dostań .md").
 - **Odczyt z Apple iWork:** Keynote, Numbers, Pages — przez eksport zainstalowaną aplikacją Apple. Wymaga tych apek i jednorazowej zgody na automatyzację (Ustawienia › Prywatność i bezpieczeństwo › Automatyzacja).
+- **OCR (tekst z obrazów):** wrzuć zdjęcie lub skan (PNG, JPG, HEIC, TIFF…) albo PDF/prezentację, gdzie tekst jest grafiką. Skryba rozpozna tekst lokalnie (Apple Vision, z polskim) i zapisze do dowolnego formatu tekstowego. Skanowane PDF-y bez warstwy tekstowej są OCR-owane automatycznie.
 - **Z transkrypcji prosto do konwersji:** przy ukończonym pliku klikasz „Konwertuj na…", a Skryba przerzuca go do zakładki Konwersja i czeka na wybór formatu.
 
 Ograniczenia (świadome): PDF i pliki Office/iWork na *wejściu* dają sam tekst (bez layoutu i obrazów). Zapis *do* PowerPointa/Excela/Keynote/Numbers nie jest obsługiwany — te formaty służą jako źródło, nie cel.
@@ -100,7 +101,7 @@ Możesz też otworzyć `Package.swift` w Xcode i uruchomić schemat `skryba`.
 ```
 Sources/
   SkrybaKit/      rdzeń: dekoder audio, silnik whisper, modele, zapis,
-                  konwersja dokumentów (DocumentConverter, Markdown, OfficeText, iWorkBridge)
+                  konwersja dokumentów (DocumentConverter, Markdown, OfficeText, iWorkBridge, OCR)
   Skryba/         aplikacja SwiftUI: zakładki Transkrypcja i Konwersja
   skryba-cli/     narzędzie wiersza poleceń (transkrypcja)
   skryba-tests/   runner testów (działa bez Xcode)
@@ -108,7 +109,7 @@ Frameworks/
   whisper.xcframework   silnik whisper.cpp (Metal), macOS arm64+x86_64
 ```
 
-Konwersja używa natywnego `NSAttributedString` (DOCX/RTF/HTML/TXT/ODT), `PDFKit` i renderu Core Text (PDF), własnego parsera Markdown oraz ekstrakcji tekstu z OOXML (PPTX/XLSX). iWork idzie przez eksport zainstalowaną apką Apple.
+Konwersja używa natywnego `NSAttributedString` (DOCX/RTF/HTML/TXT/ODT), `PDFKit` i renderu Core Text (PDF), własnego parsera Markdown, ekstrakcji tekstu z OOXML (PPTX/XLSX) oraz OCR przez Apple `Vision` (obrazy, skany). iWork idzie przez eksport zainstalowaną apką Apple.
 
 ## Licencja
 

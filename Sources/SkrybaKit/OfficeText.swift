@@ -35,7 +35,29 @@ enum OfficeText {
                 parts.append("# Slajd \(slideNumber(file) ?? 0)\n\n\(body)")
             }
         }
+        // Prezentacja bez warstwy tekstowej (slajdy to obrazy) → OCR osadzonych grafik.
+        if parts.isEmpty {
+            let ocr = ocrEmbeddedImages(dir).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ocr.isEmpty { parts.append(ocr) }
+        }
         return parts.joined(separator: "\n\n")
+    }
+
+    /// OCR grafik osadzonych w pliku Office (ppt/media, word/media itp.).
+    private static func ocrEmbeddedImages(_ dir: URL) -> String {
+        let fm = FileManager.default
+        guard let all = fm.enumerator(at: dir, includingPropertiesForKeys: nil)?.allObjects as? [URL] else { return "" }
+        let imageExt: Set<String> = ["png", "jpg", "jpeg", "tiff", "tif", "gif", "bmp", "heic"]
+        let images = all
+            .filter { imageExt.contains($0.pathExtension.lowercased()) && isSafe($0, within: dir) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var texts: [String] = []
+        for img in images {
+            guard let text = try? OCR.recognizeImageFile(img) else { continue }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { texts.append(trimmed) }
+        }
+        return texts.joined(separator: "\n\n")
     }
 
     /// Numer slajdu z nazwy `slideN.xml` (tylko ten wzorzec).
