@@ -186,6 +186,11 @@ if let modelPath = ProcessInfo.processInfo.environment["SKRYBA_E2E_MODEL"],
             let expected = ["fox", "dog", "quick", "brown", "lazy", "jump"]
             t.check(expected.contains { text.contains($0) }, "Rozpoznano oczekiwane słowo (\(text.prefix(60))...)")
 
+            // Regresja: język "auto" MUSI transkrybować (nie tylko wykrywać język).
+            let autoSegs = try engine.transcribe(samples: samples, language: "auto")
+            let autoText = autoSegs.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+            t.check(!autoText.isEmpty, "Język 'auto' transkrybuje (nie zwraca pustego wyniku)")
+
             // Anulowanie: shouldCancel == true ma przerwać i rzucić .cancelled.
             do {
                 _ = try engine.transcribe(samples: samples, language: "en", shouldCancel: { true })

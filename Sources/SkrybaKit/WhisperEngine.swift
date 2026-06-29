@@ -122,8 +122,11 @@ public final class WhisperEngine {
         }
 
         let status: Int32 = language.withCString { langPtr in
+            // Dla "auto" whisper sam wykrywa język i transkrybuje.
+            // UWAGA: detect_language=true oznacza "tylko wykryj i zakończ" (0 segmentów),
+            // dlatego musi zostać false.
             params.language = langPtr
-            params.detect_language = (language == "auto")
+            params.detect_language = false
             return samples.withUnsafeBufferPointer { buffer in
                 whisper_full(ctx, params, buffer.baseAddress, Int32(buffer.count))
             }
