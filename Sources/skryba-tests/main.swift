@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 import SkrybaKit
 
 // Lekki harness testowy (działa wszędzie, nie wymaga XCTest ani Xcode).
@@ -209,5 +210,98 @@ if let modelPath = ProcessInfo.processInfo.environment["SKRYBA_E2E_MODEL"],
 } else {
     t.skip("brak SKRYBA_E2E_MODEL — ustaw ścieżkę do ggml-*.bin, by uruchomić test silnika")
 }
+
+// MARK: - Konwersja dokumentów
+
+t.suite("Konwersja dokumentów")
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-conv-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let mdURL = dir.appendingPathComponent("notatka.md")
+    try "# Tytuł testowy\n\nAkapit z **pogrubieniem** i *kursywą*.\n\n- punkt jeden\n- punkt dwa\n"
+        .write(to: mdURL, atomically: true, encoding: .utf8)
+
+    // md → docx → txt (treść zachowana)
+    let docxURL = try await DocumentConverter.convert(input: mdURL, to: .docx, outputDirectory: dir)
+    t.check(FileManager.default.fileExists(atPath: docxURL.path), "md→docx: plik powstał")
+    let txtURL = try await DocumentConverter.convert(input: docxURL, to: .txt, outputDirectory: dir)
+    let txt = (try? String(contentsOf: txtURL, encoding: .utf8)) ?? ""
+    t.check(txt.contains("Tytuł testowy") && txt.contains("pogrubieniem"), "docx→txt: treść zachowana")
+
+    // md → pdf (PDFKit czyta tekst)
+    let pdfURL = try await DocumentConverter.convert(input: mdURL, to: .pdf, outputDirectory: dir)
+    let pdfText = PDFDocument(url: pdfURL)?.string ?? ""
+    t.check(pdfText.contains("Tytuł testowy"), "md→pdf: tekst obecny w PDF")
+
+    // md → html
+    let htmlURL = try await DocumentConverter.convert(input: mdURL, to: .html, outputDirectory: dir)
+    let html = (try? String(contentsOf: htmlURL, encoding: .utf8)) ?? ""
+    t.check(html.contains("Tytuł testowy"), "md→html: treść zachowana")
+
+    // md → rtf → md (round trip treści)
+    let rtfURL = try await DocumentConverter.convert(input: mdURL, to: .rtf, outputDirectory: dir)
+    let backMd = try await DocumentConverter.convert(input: rtfURL, to: .md, outputDirectory: dir)
+    let backText = (try? String(contentsOf: backMd, encoding: .utf8)) ?? ""
+    t.check(backText.contains("Tytuł testowy"), "rtf→md: treść zachowana")
+
+    // cele dla md
+    let targets = DocumentFormat.targets(for: .md, includeAppleApps: false).map(\.rawValue)
+    t.check(!targets.contains("md") && targets.contains("docx") && targets.contains("pdf"),
+            "Cele md: bez samego md, z docx i pdf")
+    t.check(!targets.contains("pptx") && !targets.contains("key"),
+            "Cele: brak zapisu do pptx/iWork (tylko odczyt)")
+
+    // Regresja: konwersja MUSI działać wywołana spoza głównego wątku
+    // (importery NSAttributedString HTML/DOCX wymagają main — sprawdzamy skok na MainActor).
+    let offMain = try await Task.detached {
+        try await DocumentConverter.convert(input: mdURL, to: .docx, outputDirectory: dir)
+    }.value
+    t.check(FileManager.default.fileExists(atPath: offMain.path), "md→docx z wątku tła (off-main) działa")
+}
+catch { t.check(false, "Konwersja dokumentów rzuciła błąd: \(error)") }
+
+// Ekstrakcja tekstu z PPTX/XLSX (fabrykujemy minimalne pliki przez `zip`)
+func makeZip(_ root: URL, output: URL) -> Bool {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+    p.arguments = ["-q", "-r", output.path, "."]
+    p.currentDirectoryURL = root
+    do { try p.run(); p.waitUntilExit() } catch { return false }
+    return p.terminationStatus == 0
+}
+
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-office-\(UUID().uuidString)")
+    let slides = base.appendingPathComponent("src/ppt/slides")
+    try FileManager.default.createDirectory(at: slides, withIntermediateDirectories: true)
+    try "<?xml version=\"1.0\"?><p:sld xmlns:a=\"x\"><a:t>Witaj na slajdzie</a:t><a:t>Druga linia</a:t></p:sld>"
+        .write(to: slides.appendingPathComponent("slide1.xml"), atomically: true, encoding: .utf8)
+    let pptx = base.appendingPathComponent("test.pptx")
+    defer { try? FileManager.default.removeItem(at: base) }
+    if makeZip(base.appendingPathComponent("src"), output: pptx) {
+        let out = try await DocumentConverter.convert(input: pptx, to: .md, outputDirectory: base)
+        let text = (try? String(contentsOf: out, encoding: .utf8)) ?? ""
+        t.check(text.contains("Witaj na slajdzie") && text.contains("Druga linia"), "pptx→md: wyciągnięto tekst slajdu")
+    } else { t.skip("brak `zip` — test pptx") }
+}
+catch { t.check(false, "Test pptx rzucił błąd: \(error)") }
+
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-xlsx-\(UUID().uuidString)")
+    let xl = base.appendingPathComponent("src/xl")
+    try FileManager.default.createDirectory(at: xl, withIntermediateDirectories: true)
+    try "<?xml version=\"1.0\"?><sst><si><t>Komórka A</t></si><si><t>Komórka B</t></si></sst>"
+        .write(to: xl.appendingPathComponent("sharedStrings.xml"), atomically: true, encoding: .utf8)
+    let xlsx = base.appendingPathComponent("test.xlsx")
+    defer { try? FileManager.default.removeItem(at: base) }
+    if makeZip(base.appendingPathComponent("src"), output: xlsx) {
+        let out = try await DocumentConverter.convert(input: xlsx, to: .txt, outputDirectory: base)
+        let text = (try? String(contentsOf: out, encoding: .utf8)) ?? ""
+        t.check(text.contains("Komórka A") && text.contains("Komórka B"), "xlsx→txt: wyciągnięto komórki")
+    } else { t.skip("brak `zip` — test xlsx") }
+}
+catch { t.check(false, "Test xlsx rzucił błąd: \(error)") }
 
 t.finish()

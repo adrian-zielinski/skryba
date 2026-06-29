@@ -30,6 +30,11 @@ struct ContentView: View {
         }
     }
 
+    private func convertAction(for job: AppModel.Job) -> (() -> Void)? {
+        guard job.status == .done, let out = job.outputURL else { return nil }
+        return { model.onConvertRequest?(out) }
+    }
+
     // MARK: - Pasek narzędzi
 
     private var toolbar: some View {
@@ -103,11 +108,14 @@ struct ContentView: View {
     private var jobList: some View {
         List {
             ForEach(model.jobs) { job in
-                JobRow(job: job)
+                JobRow(job: job, onConvert: convertAction(for: job))
                     .contextMenu {
                         if let out = job.outputURL {
                             Button("Pokaż w Finderze") {
                                 NSWorkspace.shared.activateFileViewerSelecting([out])
+                            }
+                            if job.status == .done {
+                                Button("Konwertuj na…") { model.onConvertRequest?(out) }
                             }
                         }
                         Button("Usuń z listy") { model.removeJob(job.id) }
@@ -174,6 +182,7 @@ struct ContentView: View {
 
 struct JobRow: View {
     let job: AppModel.Job
+    var onConvert: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -202,6 +211,14 @@ struct JobRow: View {
                 Text("\(Int(job.progress * 100))%")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+            }
+            if job.status == .done, let onConvert {
+                Button { onConvert() } label: {
+                    Label("Konwertuj na…", systemImage: "arrow.left.arrow.right")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Wyślij ten plik do zakładki Konwersja")
             }
         }
         .padding(.vertical, 4)

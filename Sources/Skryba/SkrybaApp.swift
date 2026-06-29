@@ -1,12 +1,9 @@
 import SwiftUI
 
 struct SkrybaApp: App {
-    @StateObject private var model = AppModel()
-
     var body: some Scene {
         WindowGroup("Skryba") {
-            ContentView()
-                .environmentObject(model)
+            RootView()
                 .frame(minWidth: 680, minHeight: 500)
         }
         .windowResizability(.contentMinSize)

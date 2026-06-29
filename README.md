@@ -1,8 +1,8 @@
 # Skryba
 
-Transkrypcja audio i wideo na Macu, w całości lokalnie. Przeciągasz pliki, wybierasz folder, dostajesz tekst. Nic nie wychodzi do internetu.
+Transkrypcja audio/wideo **oraz konwersja dokumentów** na Macu, w całości lokalnie. Przeciągasz pliki, wybierasz folder, dostajesz wynik. Nic nie wychodzi do internetu.
 
-Skryba używa [whisper.cpp](https://github.com/ggml-org/whisper.cpp) z akceleracją Metal (GPU), więc godzina nagrania liczy się kilka minut. Obsługuje wsady wielu plików i przetwarza je po kolei.
+Skryba używa [whisper.cpp](https://github.com/ggml-org/whisper.cpp) z akceleracją Metal (GPU), więc godzina nagrania liczy się kilka minut. Obsługuje wsady wielu plików i przetwarza je po kolei. Druga zakładka zamienia dokumenty między formatami (MD, DOCX, PDF, RTF, HTML, TXT, ODT; odczyt też z PowerPoint/Excel/Keynote/Numbers/Pages).
 
 > **English:** A native macOS app for fully local audio/video transcription. Drag files in, pick an output folder, get text out. Powered by whisper.cpp with Metal acceleration. Scroll down for the [English section](#english).
 
@@ -63,6 +63,17 @@ skryba-cli --model-id small --format srt wywiad.mp4
 skryba-cli --model /sciezka/do/ggml-large-v3-turbo.bin nagranie.mov
 ```
 
+## Konwersja dokumentów (zakładka „Konwersja")
+
+Druga zakładka działa jak transkrypcja, tylko zamiast modelu wybierasz **format docelowy**. Wrzucasz dokument, Skryba wykrywa jego typ i pyta, na co go przekonwertować.
+
+- **Pełna konwersja w obie strony:** Markdown, Word (DOCX), PDF, RTF, HTML, tekst (TXT), OpenDocument (ODT). Silnik natywny macOS, bez zależności.
+- **Odczyt z Office:** PowerPoint (PPTX) i Excel (XLSX) — Skryba wyciąga z nich tekst do dowolnego formatu tekstowego (np. „wrzuć prezentację → dostań .md").
+- **Odczyt z Apple iWork:** Keynote, Numbers, Pages — przez eksport zainstalowaną aplikacją Apple. Wymaga tych apek i jednorazowej zgody na automatyzację (Ustawienia › Prywatność i bezpieczeństwo › Automatyzacja).
+- **Z transkrypcji prosto do konwersji:** przy ukończonym pliku klikasz „Konwertuj na…", a Skryba przerzuca go do zakładki Konwersja i czeka na wybór formatu.
+
+Ograniczenia (świadome): PDF i pliki Office/iWork na *wejściu* dają sam tekst (bez layoutu i obrazów). Zapis *do* PowerPointa/Excela/Keynote/Numbers nie jest obsługiwany — te formaty służą jako źródło, nie cel.
+
 ## Budowanie ze źródeł
 
 Wymaga Swift 6 (Command Line Tools wystarczą, pełny Xcode nie jest konieczny).
@@ -88,13 +99,16 @@ Możesz też otworzyć `Package.swift` w Xcode i uruchomić schemat `skryba`.
 
 ```
 Sources/
-  SkrybaKit/      rdzeń: dekoder audio, silnik whisper, katalog/pobieranie modeli, zapis
-  Skryba/         aplikacja SwiftUI (drag&drop, kolejka, menedżer modeli)
-  skryba-cli/     narzędzie wiersza poleceń
+  SkrybaKit/      rdzeń: dekoder audio, silnik whisper, modele, zapis,
+                  konwersja dokumentów (DocumentConverter, Markdown, OfficeText, iWorkBridge)
+  Skryba/         aplikacja SwiftUI: zakładki Transkrypcja i Konwersja
+  skryba-cli/     narzędzie wiersza poleceń (transkrypcja)
   skryba-tests/   runner testów (działa bez Xcode)
 Frameworks/
   whisper.xcframework   silnik whisper.cpp (Metal), macOS arm64+x86_64
 ```
+
+Konwersja używa natywnego `NSAttributedString` (DOCX/RTF/HTML/TXT/ODT), `PDFKit` i renderu Core Text (PDF), własnego parsera Markdown oraz ekstrakcji tekstu z OOXML (PPTX/XLSX). iWork idzie przez eksport zainstalowaną apką Apple.
 
 ## Licencja
 

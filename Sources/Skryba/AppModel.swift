@@ -40,6 +40,10 @@ final class AppModel: ObservableObject {
     private var queueTask: Task<Void, Never>?
     private var cancelFlag: CancellationFlag?
 
+    /// Wywoływane przez „Konwertuj na…" przy ukończonej transkrypcji
+    /// (ustawiane przez RootView: dodaje plik do zakładki konwersji i przełącza ją).
+    var onConvertRequest: ((URL) -> Void)?
+
     static let languages: [(code: String, name: String)] = [
         ("auto", "Wykryj automatycznie"),
         ("pl", "Polski"),
