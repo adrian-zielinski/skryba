@@ -11,9 +11,9 @@ public struct WhisperModel: Identifiable, Sendable, Hashable {
     public let englishOnly: Bool
     public let recommendation: String
 
-    /// Adres pobrania (Hugging Face, oficjalne repo ggml).
+    /// Adres pobrania (Hugging Face — oficjalne repo modeli ggml whisper.cpp).
     public var downloadURL: URL {
-        URL(string: "https://huggingface.co/ggml-org/whisper.cpp/resolve/main/\(fileName)")!
+        URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)")!
     }
 
     public func stars(_ value: Int) -> String {

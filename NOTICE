@@ -15,7 +15,7 @@ Frameworks/. It provides the Metal-accelerated transcription engine.
 Whisper models (ggml format)
 ================================================================================
 The speech-recognition models are downloaded on demand from:
-https://huggingface.co/ggml-org/whisper.cpp
+https://huggingface.co/ggerganov/whisper.cpp
 
 The underlying Whisper model is by OpenAI, released under the MIT License.
 Models are not redistributed with this repository; the app fetches them at

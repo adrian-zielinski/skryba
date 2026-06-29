@@ -100,7 +100,7 @@ Frameworks/
 
 MIT. Zobacz [LICENSE](LICENSE).
 
-Skryba zawiera [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (© Georgi Gerganov, licencja MIT). Modele Whisper pochodzą z [Hugging Face](https://huggingface.co/ggml-org/whisper.cpp). Szczegóły w [NOTICE](NOTICE).
+Skryba zawiera [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (© Georgi Gerganov, licencja MIT). Modele Whisper pochodzą z [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). Szczegóły w [NOTICE](NOTICE).
 
 ---
 
