@@ -645,4 +645,44 @@ do {
     t.check(PDFCoordinateMapper.mapStroke([], in: s) == nil, "mapStroke: pusta lista → nil")
 }
 
+// MARK: - Pobieranie z linku (yt-dlp)
+
+t.suite("Pobieranie z linku")
+t.check(MediaDownloader.isLikelyMediaURL("https://www.youtube.com/watch?v=abc"), "URL: youtube rozpoznany")
+t.check(MediaDownloader.isLikelyMediaURL("https://x.com/i/status/123"), "URL: x.com rozpoznany")
+t.check(!MediaDownloader.isLikelyMediaURL("nie-link"), "URL: tekst nie jest linkiem")
+t.check(!MediaDownloader.isLikelyMediaURL("/sciezka/plik.mp4"), "URL: ścieżka nie jest linkiem")
+
+if ProcessInfo.processInfo.environment["SKRYBA_NET_TEST"] == "1" {
+    do {
+        let dl = MediaDownloader.shared
+        _ = try await dl.ensureYTDLP()
+        let url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+        let info = try await dl.probe(url: url)
+        t.check(info.title.lowercased().contains("zoo"), "probe: tytuł [\(info.title)]")
+        t.check(!info.videoHeights.isEmpty, "probe: są rozdzielczości \(info.videoHeights)")
+        t.check(info.hasAudio, "probe: jest ścieżka audio")
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-net-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let audio = try await dl.downloadAudio(url: url, to: dir)
+        t.check(FileManager.default.fileExists(atPath: audio.path), "download: plik audio powstał [\(audio.lastPathComponent)]")
+        let samples = try await AudioDecoder.decode(url: audio)
+        t.check(samples.count > 8000, "download: audio dekoduje się (\(samples.count) próbek)")
+
+        // Pełny łańcuch: link → audio → transkrypcja (gdy jest model).
+        if let modelPath = ProcessInfo.processInfo.environment["SKRYBA_E2E_MODEL"],
+           FileManager.default.fileExists(atPath: modelPath) {
+            let engine = try WhisperEngine(modelPath: modelPath)
+            let segs = try engine.transcribe(samples: samples, language: "en")
+            let text = segs.map(\.text).joined(separator: " ").lowercased()
+            t.check(!text.trimmingCharacters(in: .whitespaces).isEmpty, "link→audio→transkrypcja: niepusta [\(text.prefix(50))]")
+        }
+    } catch {
+        t.check(false, "Test sieciowy rzucił błąd: \(error)")
+    }
+} else {
+    t.skip("ustaw SKRYBA_NET_TEST=1, aby pobrać i przetestować realny link")
+}
+
 t.finish()

@@ -17,6 +17,8 @@ final class AppModel: ObservableObject {
         var progress: Double = 0
         var outputURL: URL?
         var error: String?
+        /// Plik pobrany z linku do folderu tymczasowego — usuwamy po transkrypcji.
+        var isTemporary = false
         var fileName: String { url.lastPathComponent }
     }
 
@@ -35,6 +37,12 @@ final class AppModel: ObservableObject {
     @Published var installedModelIDs: Set<String> = []
     @Published var downloadingModelID: String?
     @Published var modelDownloadProgress: Double = 0
+
+    // Pobieranie z linku (YouTube/X/Instagram…).
+    @Published var linkURL = ""
+    @Published var linkBusy = false
+    @Published var probedInfo: MediaInfo?       // ustawione → pokaż arkusz wyboru rozdzielczości
+    private var probedURL = ""
 
     let store = ModelStore.shared
     private var queueTask: Task<Void, Never>?
@@ -141,6 +149,94 @@ final class AppModel: ObservableObject {
         refreshInstalled()
     }
 
+    // MARK: - Link (YouTube/X/Instagram…)
+
+    var linkValid: Bool { MediaDownloader.isLikelyMediaURL(linkURL) }
+
+    private func ensureDownloader() async throws {
+        if MediaDownloader.shared.locateYTDLP() == nil {
+            statusMessage = "Pobieram narzędzie do pobierania (jednorazowo)…"
+            _ = try await MediaDownloader.shared.ensureYTDLP { p in
+                Task { @MainActor in self.modelDownloadProgress = p }
+            }
+        }
+    }
+
+    /// Wklej link → pobierz tylko dźwięk do folderu tymczasowego → transkrybuj → usuń plik.
+    func transcribeFromLink() {
+        let url = linkURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard MediaDownloader.isLikelyMediaURL(url), !linkBusy, !isProcessing else { return }
+        linkBusy = true
+        Task {
+            do {
+                try await ensureDownloader()
+                statusMessage = "Pobieram dźwięk z linku…"
+                let temp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("skryba-link-\(UUID().uuidString)", isDirectory: true)
+                let audio = try await MediaDownloader.shared.downloadAudio(url: url, to: temp) { p in
+                    Task { @MainActor in
+                        self.modelDownloadProgress = p
+                        self.statusMessage = "Pobieram dźwięk z linku… \(Int(p * 100))%"
+                    }
+                }
+                jobs.append(Job(url: audio, isTemporary: true))
+                linkURL = ""
+                linkBusy = false
+                start()
+            } catch {
+                statusMessage = "Błąd linku: \(error.localizedDescription)"
+                linkBusy = false
+            }
+        }
+    }
+
+    /// Sprawdź link → pokaż dostępne rozdzielczości i opcję „tylko dźwięk".
+    func probeLink() {
+        let url = linkURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard MediaDownloader.isLikelyMediaURL(url), !linkBusy else { return }
+        linkBusy = true
+        Task {
+            do {
+                try await ensureDownloader()
+                statusMessage = "Sprawdzam link…"
+                let info = try await MediaDownloader.shared.probe(url: url)
+                probedURL = url
+                probedInfo = info
+                statusMessage = info.title
+            } catch {
+                statusMessage = "Błąd linku: \(error.localizedDescription)"
+            }
+            linkBusy = false
+        }
+    }
+
+    /// Pobierz wybraną rozdzielczość (lub sam dźwięk) na dysk (do Pobranych).
+    func downloadFromLink(height: Int?, audioOnly: Bool) {
+        let url = probedURL
+        probedInfo = nil
+        guard !url.isEmpty, !linkBusy else { return }
+        linkBusy = true
+        Task {
+            do {
+                let downloads = FileManager.default
+                    .urls(for: .downloadsDirectory, in: .userDomainMask).first!
+                statusMessage = "Pobieram…"
+                let file = try await MediaDownloader.shared.download(
+                    url: url, height: height, audioOnly: audioOnly, to: downloads) { p in
+                    Task { @MainActor in
+                        self.modelDownloadProgress = p
+                        self.statusMessage = "Pobieram… \(Int(p * 100))%"
+                    }
+                }
+                statusMessage = "Pobrano: \(file.lastPathComponent)"
+                NSWorkspace.shared.activateFileViewerSelecting([file])
+            } catch {
+                statusMessage = "Błąd pobierania: \(error.localizedDescription)"
+            }
+            linkBusy = false
+        }
+    }
+
     // MARK: - Uruchomienie
 
     func start() {
@@ -205,6 +301,9 @@ final class AppModel: ObservableObject {
             if cancelFlag.isCancelled { break }
             guard let idx = jobs.firstIndex(where: { $0.id == jid }) else { continue }
             let url = jobs[idx].url
+            let isTemp = jobs[idx].isTemporary
+            // Plik pobrany z linku usuwamy po przetworzeniu (także przy przerwaniu).
+            defer { if isTemp { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) } }
             update(jid) { $0.status = .decoding; $0.progress = 0; $0.error = nil }
             statusMessage = "Przetwarzam: \(url.lastPathComponent)"
             do {

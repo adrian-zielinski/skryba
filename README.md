@@ -15,6 +15,7 @@ Skryba używa [whisper.cpp](https://github.com/ggml-org/whisper.cpp) z akcelerac
 - **Wybór modelu** z wbudowaną legendą (od `tiny` po `large-v3-turbo`), pobieranie na żądanie.
 - **Formaty wyjścia**: Markdown (`.md`), tekst (`.txt`), napisy `.srt` i `.vtt`.
 - **Język**: automatyczne wykrywanie albo wskazany ręcznie (polski, angielski i dziesiątki innych).
+- **Z linku**: wklej adres filmu (YouTube, X, Instagram, TikTok…). „Sprawdź" pokaże rozdzielczości do pobrania na dysk, a „Transkrybuj z linku" ściąga sam dźwięk tymczasowo, transkrybuje i kasuje plik — na dysku zostaje tylko transkrypcja.
 - **Bez chmury, bez konta, bez Homebrew.** Cały silnik jest w aplikacji.
 
 ## Który model wybrać
@@ -112,7 +113,7 @@ Możesz też otworzyć `Package.swift` w Xcode i uruchomić schemat `skryba`.
 
 ```
 Sources/
-  SkrybaKit/      rdzeń: dekoder audio, silnik whisper, modele, zapis,
+  SkrybaKit/      rdzeń: dekoder audio, silnik whisper, modele, zapis, pobieranie z linku (MediaDownloader),
                   konwersja dokumentów (DocumentConverter, Markdown, OfficeText, iWorkBridge, OCR),
                   edytor PDF (PDFEditing, SignatureProcessor, SignatureStore)
   Skryba/         aplikacja SwiftUI: zakładki Transkrypcja, Konwersja i Edytor PDF
@@ -123,6 +124,8 @@ Frameworks/
 ```
 
 Konwersja używa natywnego `NSAttributedString` (DOCX/RTF/HTML/TXT/ODT), `PDFKit` i renderu Core Text (PDF), własnego parsera Markdown, ekstrakcji tekstu z OOXML (PPTX/XLSX) oraz OCR przez Apple `Vision` (obrazy, skany). iWork idzie przez eksport zainstalowaną apką Apple.
+
+Pobieranie z linku korzysta z [yt-dlp](https://github.com/yt-dlp/yt-dlp) (public domain). Skryba pobiera tę binarkę na żądanie do swojego folderu (`Application Support/Skryba/bin`) i ją aktualizuje — nie jest wbudowana, bo serwisy zmieniają się zbyt często, by trzymać statyczną kopię.
 
 ## Licencja
 

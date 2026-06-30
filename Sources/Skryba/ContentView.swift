@@ -10,6 +10,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
+            linkBar
+            Divider()
             ZStack {
                 if model.jobs.isEmpty {
                     dropZone
@@ -28,6 +30,30 @@ struct ContentView: View {
         .sheet(isPresented: $showModels) {
             ModelManagerView().environmentObject(model)
         }
+        .sheet(isPresented: Binding(get: { model.probedInfo != nil }, set: { if !$0 { model.probedInfo = nil } })) {
+            LinkProbeSheet().environmentObject(model)
+        }
+    }
+
+    private var linkBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "link").foregroundStyle(.secondary)
+            TextField("Wklej link do filmu (YouTube, X, Instagram…)", text: $model.linkURL)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { model.transcribeFromLink() }
+                .disabled(model.linkBusy)
+            if model.linkBusy { ProgressView().controlSize(.small) }
+            Button("Sprawdź") { model.probeLink() }
+                .disabled(model.linkBusy || !model.linkValid)
+                .help("Pokaż dostępne rozdzielczości i pobierz na dysk")
+            Button { model.transcribeFromLink() } label: {
+                Label("Transkrybuj z linku", systemImage: "arrow.down.to.line")
+            }
+            .disabled(model.linkBusy || !model.linkValid || model.isProcessing)
+            .help("Pobierz sam dźwięk tymczasowo i przetranskrybuj — bez zapisu filmu na dysk")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     private func convertAction(for job: AppModel.Job) -> (() -> Void)? {
@@ -175,6 +201,55 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+// MARK: - Arkusz pobierania z linku
+
+struct LinkProbeSheet: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Pobierz z linku").font(.title2.bold())
+            if let info = model.probedInfo {
+                Text(info.title).font(.headline).lineLimit(2)
+                if let d = info.durationSeconds {
+                    Text("Czas: \(formatDuration(d))").foregroundStyle(.secondary).font(.callout)
+                }
+                Divider()
+                Text("Co pobrać na dysk (do Pobranych):").font(.callout).foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if info.hasAudio {
+                            Button { model.downloadFromLink(height: nil, audioOnly: true) } label: {
+                                Label("Tylko dźwięk (m4a, najlżejsze)", systemImage: "music.note")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        ForEach(info.videoHeights.reversed(), id: \.self) { h in
+                            Button { model.downloadFromLink(height: h, audioOnly: false) } label: {
+                                Label("Wideo \(h)p", systemImage: "film")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        if info.videoHeights.isEmpty && !info.hasAudio {
+                            Text("Brak dostępnych formatów.").foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Spacer()
+            HStack { Spacer(); Button("Zamknij") { dismiss() } }
+        }
+        .padding(20)
+        .frame(width: 420, height: 360)
+    }
+
+    private func formatDuration(_ s: Double) -> String {
+        let total = Int(s)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 
