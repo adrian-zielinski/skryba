@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import PDFKit
+import Vision
 import SkrybaKit
 
 // Lekki harness testowy (działa wszędzie, nie wymaga XCTest ani Xcode).
@@ -357,5 +358,141 @@ do {
 }
 catch is CancellationError {}
 catch { t.check(false, "Test OCR rzucił błąd: \(error)") }
+
+// MARK: - Edytor PDF i podpisy
+
+t.suite("Edytor PDF")
+
+func makeTextImage(_ text: String, size: NSSize = NSSize(width: 360, height: 120)) -> NSImage {
+    let img = NSImage(size: size)
+    img.lockFocus()
+    NSColor.white.setFill(); NSRect(origin: .zero, size: size).fill()
+    (text as NSString).draw(at: NSPoint(x: 16, y: 40),
+        withAttributes: [.font: NSFont.boldSystemFont(ofSize: 34), .foregroundColor: NSColor.black])
+    img.unlockFocus()
+    return img
+}
+
+func ocrCG(_ cg: CGImage) -> String {
+    let req = VNRecognizeTextRequest(); req.recognitionLevel = .accurate
+    req.recognitionLanguages = ["pl-PL", "en-US"]
+    try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([req])
+    return (req.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+}
+
+func renderPDFPage(_ page: PDFPage) -> CGImage? {
+    let b = page.bounds(for: .mediaBox)
+    let s: CGFloat = 2
+    let w = Int(b.width * s), h = Int(b.height * s)
+    guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+        bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    ctx.scaleBy(x: s, y: s); page.draw(with: .mediaBox, to: ctx)
+    return ctx.makeImage()
+}
+
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-pdf-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    // Bazowy PDF z oryginalnym tekstem.
+    let mdURL = dir.appendingPathComponent("oryginal.md")
+    try "# ORYGINALNY TEKST\n\nTresc dokumentu do podpisu.".write(to: mdURL, atomically: true, encoding: .utf8)
+    let pdfURL = try await DocumentConverter.convert(input: mdURL, to: .pdf, outputDirectory: dir)
+    guard let doc = PDFDocument(url: pdfURL) else { t.check(false, "nie wczytano bazowego PDF"); throw CancellationError() }
+    let startCount = doc.pageCount
+
+    // Strony: wstaw obraz, usuń, sprawdź licznik.
+    t.check(PDFEditing.insertImagePage(doc, image: makeTextImage("STRONA OBRAZ"), at: 1), "wstaw stronę-obraz")
+    t.equal(doc.pageCount, startCount + 1, "po wstawieniu: +1 strona")
+    t.check(PDFEditing.deletePage(doc, at: 1), "usuń stronę")
+    t.equal(doc.pageCount, startCount, "po usunięciu: licznik wraca")
+
+    // Adnotacje na stronie 0.
+    guard let page0 = doc.page(at: 0) else { t.check(false, "brak strony 0"); throw CancellationError() }
+    let pb = page0.bounds(for: .mediaBox)
+    PDFEditing.addWhiteout(to: page0, bounds: CGRect(x: 40, y: pb.midY, width: 120, height: 24))
+    PDFEditing.addText("PODPISANO", to: page0, bounds: CGRect(x: 40, y: 90, width: 240, height: 36), fontSize: 24)
+    PDFEditing.addSignature(image: makeTextImage("PODPIS", size: NSSize(width: 300, height: 90)),
+                            to: page0, bounds: CGRect(x: 40, y: 150, width: 220, height: 66))
+    let stroke = NSBezierPath()
+    stroke.move(to: NSPoint(x: pb.midX, y: 230)); stroke.line(to: NSPoint(x: pb.midX + 120, y: 250))
+    PDFEditing.addInk(paths: [stroke], to: page0)
+    t.check(page0.annotations.count >= 4, "dodano adnotacje (\(page0.annotations.count))")
+
+    // Spłaszczenie i weryfikacja.
+    guard let data = PDFEditing.flattenedData(doc), let flat = PDFDocument(data: data) else {
+        t.check(false, "spłaszczenie nie powiodło się"); throw CancellationError()
+    }
+    t.equal(flat.pageCount, doc.pageCount, "flatten: liczba stron zachowana")
+    t.check((flat.string ?? "").uppercased().contains("ORYGINALNY"), "flatten: oryginalny tekst zachowany")
+    if let cg = renderPDFPage(flat.page(at: 0)!) {
+        let ocr = ocrCG(cg).uppercased()
+        t.check(ocr.contains("PODPISANO"), "flatten: pole tekstowe wtopione [\(ocr.prefix(50))]")
+        t.check(ocr.contains("PODPIS"), "flatten: podpis-obraz wtopiony w PDF")
+    } else { t.skip("nie udało się zrenderować strony do OCR") }
+
+    // Wielostronicowy: usuń środkową, wstaw w środku — sprawdź kolejność (OCR).
+    let multi = PDFDocument()
+    for (i, label) in ["AAA", "BBB", "CCC"].enumerated() {
+        if let page = PDFPage(image: makeTextImage(label, size: NSSize(width: 300, height: 400))) {
+            multi.insert(page, at: i)
+        }
+    }
+    t.equal(multi.pageCount, 3, "wielostr.: 3 strony na start")
+    t.check(PDFEditing.deletePage(multi, at: 1), "wielostr.: usuń środkową (B)")
+    func pageText(_ d: PDFDocument, _ i: Int) -> String {
+        guard let p = d.page(at: i), let cg = renderPDFPage(p) else { return "" }
+        return ocrCG(cg).uppercased()
+    }
+    t.check(pageText(multi, 0).contains("AAA") && pageText(multi, 1).contains("CCC"),
+            "wielostr.: po usunięciu zostają A, C")
+    // wstaw obraz X na pozycji 1 (między A i C)
+    let xURL = dir.appendingPathComponent("x.png")
+    if let data = NSBitmapImageRep(cgImage: makeTextImage("XXX", size: NSSize(width: 300, height: 400))
+        .cgImage(forProposedRect: nil, context: nil, hints: nil)!).representation(using: .png, properties: [:]) {
+        try data.write(to: xURL)
+        t.equal(PDFEditing.insertFile(multi, url: xURL, at: 1), 1, "wielostr.: wstaw X w środku")
+        t.check(pageText(multi, 0).contains("AAA") && pageText(multi, 1).contains("XXX") && pageText(multi, 2).contains("CCC"),
+                "wielostr.: kolejność A, X, C")
+    }
+}
+catch is CancellationError {}
+catch { t.check(false, "Test edytora PDF rzucił błąd: \(error)") }
+
+// Wycinanie tła podpisu + biblioteka
+do {
+    let signed = makeTextImage("PODPIS", size: NSSize(width: 300, height: 100))
+    guard let transparent = SignatureProcessor.removeBackground(signed),
+          let cg = transparent.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        t.check(false, "removeBackground zwrócił nil"); throw CancellationError()
+    }
+    // Sprawdź, że są piksele przezroczyste (tło) i nieprzezroczyste (tusz).
+    let w = cg.width, h = cg.height
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    var transparentCount = 0, opaqueCount = 0
+    for i in stride(from: 3, to: px.count, by: 4) {
+        if px[i] == 0 { transparentCount += 1 } else if px[i] > 200 { opaqueCount += 1 }
+    }
+    t.check(transparentCount > 0, "removeBackground: tło stało się przezroczyste")
+    t.check(opaqueCount > 0, "removeBackground: tusz pozostał widoczny")
+
+    // Biblioteka podpisów (w temp).
+    let storeDir = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-sig-\(UUID().uuidString)")
+    let store = SignatureStore(directory: storeDir)
+    defer { try? FileManager.default.removeItem(at: storeDir) }
+    let url = try store.add(transparent)
+    t.equal(store.all().count, 1, "biblioteka: dodano 1 podpis")
+    t.check(store.image(url) != nil, "biblioteka: podpis się wczytuje")
+    store.delete(url)
+    t.equal(store.all().count, 0, "biblioteka: usunięto podpis")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test podpisów rzucił błąd: \(error)") }
 
 t.finish()

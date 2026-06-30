@@ -1,6 +1,6 @@
 # Skryba
 
-Transkrypcja audio/wideo **oraz konwersja dokumentów** na Macu, w całości lokalnie. Przeciągasz pliki, wybierasz folder, dostajesz wynik. Nic nie wychodzi do internetu.
+Transkrypcja audio/wideo, **konwersja dokumentów** i **edytor PDF** na Macu, w całości lokalnie. Przeciągasz pliki, wybierasz folder, dostajesz wynik. Nic nie wychodzi do internetu.
 
 Skryba używa [whisper.cpp](https://github.com/ggml-org/whisper.cpp) z akceleracją Metal (GPU), więc godzina nagrania liczy się kilka minut. Obsługuje wsady wielu plików i przetwarza je po kolei. Druga zakładka zamienia dokumenty między formatami (MD, DOCX, PDF, RTF, HTML, TXT, ODT; odczyt też z PowerPoint/Excel/Keynote/Numbers/Pages).
 
@@ -75,6 +75,18 @@ Druga zakładka działa jak transkrypcja, tylko zamiast modelu wybierasz **forma
 
 Ograniczenia (świadome): PDF i pliki Office/iWork na *wejściu* dają sam tekst (bez layoutu i obrazów). Zapis *do* PowerPointa/Excela/Keynote/Numbers nie jest obsługiwany — te formaty służą jako źródło, nie cel.
 
+## Edytor PDF (zakładka „Edytor PDF")
+
+Wizualna edycja PDF, bez chmury:
+
+- **Nakładki na dokument:** pola tekstowe, „zamaluj i napisz" (białe pole + tekst), rysowanie myszką (podpis, podkreślenie, X w polu).
+- **Podpisy — własna biblioteka:** narysuj podpis, wgraj obraz, albo **wgraj zdjęcie podpisu z białej kartki, a Skryba wytnie tło** i zostawi przezroczysty podpis. Zapisane podpisy wstawiasz jednym kliknięciem.
+- **Strony:** usuń stronę (X na miniaturze), wstaw stronę (z PDF lub obrazu) w dowolnym miejscu, zmień kolejność.
+- **Panel źródeł:** przeciągasz tam PDF-y/obrazy, a stamtąd na miniaturę strony, by wkleić je w środku bieżącego dokumentu.
+- **Zapis:** eksport spłaszcza wszystkie nakładki na stałe (podpisy/rysunki są w pliku), zachowując zaznaczalny tekst oryginału.
+
+Czego edytor **nie** robi: nie zmienia oryginalnej warstwy tekstu „w miejscu" (PDFKit ani żadna biblioteka tego nie potrafi wiarygodnie). Zamiast tego zasłaniasz fragment i piszesz na wierzchu. Podpisów zapisanych w Podglądzie macOS nie da się odczytać (Apple trzyma je zaszyfrowane), dlatego Skryba ma własną, przenośną bibliotekę podpisów.
+
 ## Budowanie ze źródeł
 
 Wymaga Swift 6 (Command Line Tools wystarczą, pełny Xcode nie jest konieczny).
@@ -101,8 +113,9 @@ Możesz też otworzyć `Package.swift` w Xcode i uruchomić schemat `skryba`.
 ```
 Sources/
   SkrybaKit/      rdzeń: dekoder audio, silnik whisper, modele, zapis,
-                  konwersja dokumentów (DocumentConverter, Markdown, OfficeText, iWorkBridge, OCR)
-  Skryba/         aplikacja SwiftUI: zakładki Transkrypcja i Konwersja
+                  konwersja dokumentów (DocumentConverter, Markdown, OfficeText, iWorkBridge, OCR),
+                  edytor PDF (PDFEditing, SignatureProcessor, SignatureStore)
+  Skryba/         aplikacja SwiftUI: zakładki Transkrypcja, Konwersja i Edytor PDF
   skryba-cli/     narzędzie wiersza poleceń (transkrypcja)
   skryba-tests/   runner testów (działa bez Xcode)
 Frameworks/
