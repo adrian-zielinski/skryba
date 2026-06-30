@@ -495,4 +495,150 @@ do {
 catch is CancellationError {}
 catch { t.check(false, "Test podpisów rzucił błąd: \(error)") }
 
+// MARK: - Współrzędne edytora PDF (overlay → PDFView → strona)
+
+t.suite("Współrzędne edytora PDF")
+
+// Atrapa układu PDFView: pionowy stos `pageCount` stron pageWidth×pageHeight rozdzielonych
+// pustą przerwą `gap`. Układ nakładki = układ widoku przesunięty o `overlayDelta` (pozwala
+// sprawdzić, że konwersja overlay→view jest faktycznie stosowana). `pageIndex(forViewPoint:)`
+// naśladuje nearest:true — punkt w przerwie lub poza stosem przyciąga do najbliższej strony;
+// pusty dokument zwraca nil.
+struct FakeStack: PDFCoordinateSpace {
+    let pageCount: Int
+    let pageWidth: CGFloat = 100
+    let pageHeight: CGFloat = 200
+    let gap: CGFloat = 40
+    var overlayDelta: CGPoint = .zero
+
+    var pitch: CGFloat { pageHeight + gap }
+    func bandBottom(_ i: Int) -> CGFloat { CGFloat(i) * pitch }   // dolny brzeg pasma strony i (w układzie widoku)
+
+    func overlayToView(_ p: CGPoint) -> CGPoint {
+        CGPoint(x: p.x + overlayDelta.x, y: p.y + overlayDelta.y)
+    }
+    func pageIndex(forViewPoint p: CGPoint) -> Int? {
+        guard pageCount > 0 else { return nil }
+        var best = 0, bestDist = CGFloat.greatestFiniteMagnitude
+        for i in 0..<pageCount {
+            let lo = bandBottom(i), hi = lo + pageHeight
+            let d = p.y < lo ? lo - p.y : (p.y > hi ? p.y - hi : 0)
+            if d < bestDist { bestDist = d; best = i }
+        }
+        return best
+    }
+    func viewToPage(_ p: CGPoint, pageIndex i: Int) -> CGPoint {
+        CGPoint(x: p.x, y: p.y - bandBottom(i))
+    }
+    // Punkt nakładki, który trafia w stronę i w jej punkcie pp (do budowania danych testowych).
+    func overlayPoint(page i: Int, pagePoint pp: CGPoint) -> CGPoint {
+        CGPoint(x: pp.x - overlayDelta.x, y: pp.y + bandBottom(i) - overlayDelta.y)
+    }
+}
+
+func approx(_ a: CGFloat, _ b: CGFloat, _ eps: CGFloat = 1e-6) -> Bool { abs(a - b) <= eps }
+func approxPt(_ a: CGPoint, _ b: CGPoint, _ eps: CGFloat = 1e-6) -> Bool { approx(a.x, b.x, eps) && approx(a.y, b.y, eps) }
+func approxRect(_ a: CGRect, _ b: CGRect, _ eps: CGFloat = 1e-6) -> Bool {
+    approx(a.minX, b.minX, eps) && approx(a.minY, b.minY, eps) && approx(a.width, b.width, eps) && approx(a.height, b.height, eps)
+}
+
+// Czysta geometria
+t.check(approxRect(PDFCoordinateMath.normalizedRect(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 2, y: 40)),
+                   CGRect(x: 2, y: 10, width: 8, height: 30)),
+        "normalizedRect: rogi w dowolnej kolejności → nieujemny prostokąt")
+t.check(approxRect(PDFCoordinateMath.normalizedRect(from: CGPoint(x: 2, y: 40), to: CGPoint(x: 10, y: 10)),
+                   CGRect(x: 2, y: 10, width: 8, height: 30)),
+        "normalizedRect: odwrócone rogi dają ten sam prostokąt")
+t.check(approxPt(PDFCoordinateMath.midpoint(CGPoint(x: 0, y: 0), CGPoint(x: 10, y: 20)), CGPoint(x: 5, y: 10)),
+        "midpoint: środek odcinka")
+
+// Round-trip: klik na konkretnej stronie wraca do tego samego punktu strony
+do {
+    let s = FakeStack(pageCount: 3)
+    let pp = CGPoint(x: 30, y: 150)
+    if let r = PDFCoordinateMapper.map(overlayPoint: s.overlayPoint(page: 2, pagePoint: pp), in: s) {
+        t.check(r.pageIndex == 2, "map: trafiono w stronę 2")
+        t.check(approxPt(r.pagePoint, pp), "map: round-trip punktu strony  [\(r.pagePoint)]")
+    } else { t.check(false, "map: zwrócono nil dla punktu na stronie") }
+}
+
+// overlay→view jest stosowane (niezerowy delta nakładki)
+do {
+    let s = FakeStack(pageCount: 2, overlayDelta: CGPoint(x: 5, y: 7))
+    let pp = CGPoint(x: 20, y: 60)
+    if let r = PDFCoordinateMapper.map(overlayPoint: s.overlayPoint(page: 1, pagePoint: pp), in: s) {
+        t.check(r.pageIndex == 1, "map(delta): trafiono w stronę 1")
+        t.check(approxPt(r.pagePoint, pp), "map(delta): konwersja overlay→view uwzględniona  [\(r.pagePoint)]")
+    } else { t.check(false, "map(delta): zwrócono nil") }
+}
+
+// nearest:true — klik w przerwie między stronami przyciąga do bliższej
+do {
+    let s = FakeStack(pageCount: 2)   // strona 0: y∈[0,200], przerwa [200,240], strona 1: [240,440]
+    let near0 = PDFCoordinateMapper.map(overlayPoint: CGPoint(x: 50, y: 215), in: s)
+    let near1 = PDFCoordinateMapper.map(overlayPoint: CGPoint(x: 50, y: 225), in: s)
+    t.check(near0?.pageIndex == 0, "nearest: punkt w przerwie bliżej strony 0")
+    t.check(near1?.pageIndex == 1, "nearest: punkt w przerwie bliżej strony 1")
+}
+
+// nearest:true — klik poza całym stosem przyciąga do skrajnej strony
+do {
+    let s = FakeStack(pageCount: 3)
+    t.check(PDFCoordinateMapper.map(overlayPoint: CGPoint(x: 10, y: -50), in: s)?.pageIndex == 0,
+            "nearest: poniżej stosu → strona 0")
+    t.check(PDFCoordinateMapper.map(overlayPoint: CGPoint(x: 10, y: 99_999), in: s)?.pageIndex == 2,
+            "nearest: powyżej stosu → ostatnia strona")
+}
+
+// Pusty dokument → nil, bez crasha (regresja force-unwrap z commitWhiteout)
+do {
+    let empty = FakeStack(pageCount: 0)
+    t.check(PDFCoordinateMapper.map(overlayPoint: CGPoint(x: 1, y: 1), in: empty) == nil,
+            "pusty dokument: map → nil (bez force-unwrap)")
+    t.check(PDFCoordinateMapper.mapDragRect(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 5, y: 5), in: empty) == nil,
+            "pusty dokument: mapDragRect → nil")
+    t.check(PDFCoordinateMapper.mapStroke([CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)], in: empty) == nil,
+            "pusty dokument: mapStroke → nil")
+}
+
+// mapDragRect: normalizacja + oba rogi rzutowane na JEDNĄ stronę (w obrębie jednej strony)
+do {
+    let s = FakeStack(pageCount: 2)
+    let a = s.overlayPoint(page: 1, pagePoint: CGPoint(x: 70, y: 120))
+    let b = s.overlayPoint(page: 1, pagePoint: CGPoint(x: 20, y: 40))   // rogi w odwrotnej kolejności
+    if let r = PDFCoordinateMapper.mapDragRect(from: a, to: b, in: s) {
+        t.check(r.pageIndex == 1, "mapDragRect: strona ze środka przeciągnięcia")
+        t.check(approxRect(r.rect, CGRect(x: 20, y: 40, width: 50, height: 80)),
+                "mapDragRect: znormalizowany prostokąt w układzie strony  [\(r.rect)]")
+    } else { t.check(false, "mapDragRect: zwrócono nil") }
+}
+
+// mapDragRect: przeciągnięcie przez granicę stron NIE miesza układów — oba rogi → strona środka
+do {
+    let s = FakeStack(pageCount: 2)
+    let a = s.overlayPoint(page: 0, pagePoint: CGPoint(x: 10, y: 190))  // widok y = 190 (strona 0)
+    let b = s.overlayPoint(page: 1, pagePoint: CGPoint(x: 60, y: 60))   // widok y = 300 (strona 1)
+    let mid = 1   // środek widoku y = 245 ∈ [240,440] → strona 1
+    let expected = PDFCoordinateMath.normalizedRect(
+        from: s.viewToPage(s.overlayToView(a), pageIndex: mid),
+        to:   s.viewToPage(s.overlayToView(b), pageIndex: mid))
+    let r = PDFCoordinateMapper.mapDragRect(from: a, to: b, in: s)
+    t.check(r?.pageIndex == mid, "mapDragRect (przez granicę): strona ze środka")
+    t.check(r != nil && approxRect(r!.rect, expected),
+            "mapDragRect (przez granicę): oba rogi w układzie tej samej strony  [\(String(describing: r?.rect))]")
+}
+
+// mapStroke: wszystkie punkty na stronie pierwszego punktu; kolejność i licznik zachowane
+do {
+    let s = FakeStack(pageCount: 2)
+    let local = [CGPoint(x: 10, y: 20), CGPoint(x: 30, y: 40), CGPoint(x: 50, y: 10)]
+    let pts = local.map { s.overlayPoint(page: 1, pagePoint: $0) }
+    if let r = PDFCoordinateMapper.mapStroke(pts, in: s) {
+        t.check(r.pageIndex == 1, "mapStroke: strona pierwszego punktu")
+        t.check(r.points.count == 3, "mapStroke: zachowano liczbę punktów")
+        t.check(zip(r.points, local).allSatisfy { approxPt($0.0, $0.1) }, "mapStroke: punkty w układzie strony, kolejność zachowana")
+    } else { t.check(false, "mapStroke: zwrócono nil") }
+    t.check(PDFCoordinateMapper.mapStroke([], in: s) == nil, "mapStroke: pusta lista → nil")
+}
+
 t.finish()

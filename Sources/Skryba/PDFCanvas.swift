@@ -138,7 +138,7 @@ final class ToolOverlay: NSView {
             path.stroke()
         }
         if tool == .whiteout, let a = dragStart, let b = dragCurrent {
-            let rect = NSRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+            let rect = PDFCoordinateMath.normalizedRect(from: a, to: b)
             NSColor.white.withAlphaComponent(0.85).setFill()
             NSColor.systemBlue.setStroke()
             let bez = NSBezierPath(rect: rect); bez.fill(); bez.lineWidth = 1; bez.stroke()
@@ -147,20 +147,19 @@ final class ToolOverlay: NSView {
 
     // MARK: - Konwersja i zatwierdzanie
 
-    private func pageAndPoint(_ overlayPoint: NSPoint) -> (Int, NSPoint, PDFPage)? {
-        let inPDF = pdfView.convert(overlayPoint, from: self)
-        guard let page = pdfView.page(for: inPDF, nearest: true),
-              let index = pdfView.document?.index(for: page) else { return nil }
-        return (index, pdfView.convert(inPDF, to: page), page)
+    /// Adapter żywego PDFView do `PDFCoordinateSpace`. Sama logika mapowania (overlay → strona,
+    /// nearest:true, normalizacja prostokąta) mieszka w SkrybaKit i jest pokryta testami.
+    private var coordinateSpace: PDFCoordinateSpace {
+        OverlayCoordinateSpace(pdfView: pdfView, overlay: self)
     }
 
     private func commitSignature(at p: NSPoint) {
-        guard let (index, pagePoint, _) = pageAndPoint(p) else { return }
+        guard let (index, pagePoint) = PDFCoordinateMapper.map(overlayPoint: p, in: coordinateSpace) else { return }
         model?.placeSignature(onPage: index, at: pagePoint)
     }
 
     private func commitText(at p: NSPoint) {
-        guard let (index, pagePoint, _) = pageAndPoint(p) else { return }
+        guard let (index, pagePoint) = PDFCoordinateMapper.map(overlayPoint: p, in: coordinateSpace) else { return }
         let alert = NSAlert()
         alert.messageText = "Wpisz tekst"
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
@@ -173,26 +172,18 @@ final class ToolOverlay: NSView {
     }
 
     private func commitWhiteout() {
-        guard let a = dragStart, let b = dragCurrent else { return }
-        let mid = NSPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-        // Stronę i układ bierzemy ze środka zaznaczenia — bez force-unwrap.
-        guard let (index, _, page) = pageAndPoint(mid) else { return }
-        let pa = pdfView.convert(pdfView.convert(a, from: self), to: page)
-        let pb = pdfView.convert(pdfView.convert(b, from: self), to: page)
-        let rect = NSRect(x: min(pa.x, pb.x), y: min(pa.y, pb.y), width: abs(pa.x - pb.x), height: abs(pa.y - pb.y))
+        guard let a = dragStart, let b = dragCurrent,
+              let (index, rect) = PDFCoordinateMapper.mapDragRect(from: a, to: b, in: coordinateSpace) else { return }
         model?.addWhiteout(onPage: index, rect: rect)
     }
 
     private func commitInk() {
-        guard strokePoints.count > 1, let first = strokePoints.first,
-              let (index, _, page) = pageAndPoint(first) else { return }
+        guard strokePoints.count > 1,
+              let (index, pagePoints) = PDFCoordinateMapper.mapStroke(strokePoints, in: coordinateSpace),
+              let first = pagePoints.first else { return }
         let path = NSBezierPath()
-        let start = pdfView.convert(pdfView.convert(first, from: self), to: page)
-        path.move(to: start)
-        for pt in strokePoints.dropFirst() {
-            let pp = pdfView.convert(pdfView.convert(pt, from: self), to: page)
-            path.line(to: pp)
-        }
+        path.move(to: first)
+        for pt in pagePoints.dropFirst() { path.line(to: pt) }
         model?.addInk(onPage: index, path: path)
     }
 
@@ -200,5 +191,25 @@ final class ToolOverlay: NSView {
     override func resetCursorRects() {
         let cursor: NSCursor = tool == .select ? .arrow : .crosshair
         addCursorRect(bounds, cursor: cursor)
+    }
+}
+
+/// Adapter żywego PDFView do `PDFCoordinateSpace` — trzy konwersje PDFKit, których nie da się
+/// odtworzyć bez okna. Logika ich używająca (wybór strony, normalizacja) mieszka w SkrybaKit.
+private struct OverlayCoordinateSpace: PDFCoordinateSpace {
+    let pdfView: PDFView
+    let overlay: NSView
+
+    func overlayToView(_ point: CGPoint) -> CGPoint {
+        pdfView.convert(point, from: overlay)
+    }
+    func pageIndex(forViewPoint point: CGPoint) -> Int? {
+        guard let page = pdfView.page(for: point, nearest: true),
+              let index = pdfView.document?.index(for: page) else { return nil }
+        return index
+    }
+    func viewToPage(_ point: CGPoint, pageIndex: Int) -> CGPoint {
+        guard let page = pdfView.document?.page(at: pageIndex) else { return point }
+        return pdfView.convert(point, to: page)
     }
 }
