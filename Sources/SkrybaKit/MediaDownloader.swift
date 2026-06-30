@@ -94,7 +94,7 @@ public final class MediaDownloader: @unchecked Sendable {
 
     public func probe(url: String) async throws -> MediaInfo {
         let yt = try await ensureYTDLP()
-        let result = try runProcess(yt, ["-J", "--no-warnings", "--no-playlist", url], onLine: nil)
+        let result = try runProcess(yt, ["-J", "--no-warnings", "--no-playlist"] + siteArgs() + [url], onLine: nil)
         guard result.exitCode == 0,
               let data = result.stdout.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -121,8 +121,8 @@ public final class MediaDownloader: @unchecked Sendable {
     public func downloadAudio(url: String, to directory: URL, progress: ((Double) -> Void)? = nil) async throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let yt = try await ensureYTDLP()
-        var args = ["--no-warnings", "--no-playlist", "--newline",
-                    "-o", directory.appendingPathComponent("%(title).200B.%(ext)s").path]
+        var args = ["--no-warnings", "--no-playlist", "--newline"] + siteArgs() +
+                   ["-o", directory.appendingPathComponent("%(title).200B.%(ext)s").path]
         if let ffmpegDir = ffmpegDirectory() {
             args += ["--ffmpeg-location", ffmpegDir, "-x", "--audio-format", "m4a"]
         } else {
@@ -139,8 +139,8 @@ public final class MediaDownloader: @unchecked Sendable {
         if audioOnly { return try await downloadAudio(url: url, to: directory, progress: progress) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let yt = try await ensureYTDLP()
-        var args = ["--no-warnings", "--no-playlist", "--newline",
-                    "-o", directory.appendingPathComponent("%(title).200B.%(ext)s").path]
+        var args = ["--no-warnings", "--no-playlist", "--newline"] + siteArgs() +
+                   ["-o", directory.appendingPathComponent("%(title).200B.%(ext)s").path]
         if let ffmpegDir = ffmpegDirectory() { args += ["--ffmpeg-location", ffmpegDir] }
         let h = height.map(String.init) ?? "99999"
         args += ["-f", "b[height<=\(h)][ext=mp4]/b[height<=\(h)]/bv[height<=\(h)]+ba/b"]
@@ -181,6 +181,35 @@ public final class MediaDownloader: @unchecked Sendable {
 
     private func ffmpegDirectory() -> String? {
         FFmpegDecoder.locate().map { ($0 as NSString).deletingLastPathComponent }
+    }
+
+    /// Środowisko JavaScript do rozwiązania wyzwania nsig YouTube (inaczej część
+    /// strumieni zwraca HTTP 403). Szuka deno/node/bun.
+    private func jsRuntime() -> (name: String, path: String)? {
+        let candidates: [(String, [String])] = [
+            ("deno", ["/opt/homebrew/bin/deno", "/usr/local/bin/deno"]),
+            ("node", ["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node"]),
+            ("bun", ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"]),
+        ]
+        for (name, paths) in candidates {
+            for p in paths where FileManager.default.isExecutableFile(atPath: p) { return (name, p) }
+        }
+        if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
+            for (name, _) in candidates {
+                for dir in pathEnv.split(separator: ":") {
+                    let c = "\(dir)/\(name)"
+                    if FileManager.default.isExecutableFile(atPath: c) { return (name, c) }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Argumenty łagodzące blokady YouTube. Z runtime JS używamy domyślnych klientów
+    /// (dają lekkie audio-only). Bez JS — klient android/tv, który działa bez nsig.
+    private func siteArgs() -> [String] {
+        if let rt = jsRuntime() { return ["--js-runtimes", "\(rt.name):\(rt.path)"] }
+        return ["--extractor-args", "youtube:player_client=android,tv"]
     }
 
     /// Uruchamia proces, drenując oba potoki; opcjonalnie woła `onLine` dla każdej linii.

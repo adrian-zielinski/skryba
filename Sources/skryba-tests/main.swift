@@ -657,9 +657,9 @@ if ProcessInfo.processInfo.environment["SKRYBA_NET_TEST"] == "1" {
     do {
         let dl = MediaDownloader.shared
         _ = try await dl.ensureYTDLP()
-        let url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+        let url = ProcessInfo.processInfo.environment["SKRYBA_NET_URL"] ?? "https://www.youtube.com/watch?v=jNQXAC9IVRw"
         let info = try await dl.probe(url: url)
-        t.check(info.title.lowercased().contains("zoo"), "probe: tytuł [\(info.title)]")
+        t.check(!info.title.isEmpty, "probe: tytuł [\(info.title)]")
         t.check(!info.videoHeights.isEmpty, "probe: są rozdzielczości \(info.videoHeights)")
         t.check(info.hasAudio, "probe: jest ścieżka audio")
 
