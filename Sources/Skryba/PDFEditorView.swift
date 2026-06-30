@@ -94,9 +94,22 @@ struct PDFEditorView: View {
             Text(model.statusMessage).font(.callout).lineLimit(1).truncationMode(.middle)
             if model.isDirty { Text("• niezapisane").font(.callout).foregroundStyle(.orange) }
             Spacer()
-            if model.document != nil { Text("\(model.pageCount) stron").font(.callout).foregroundStyle(.secondary) }
+            if model.document != nil {
+                Text(toolHint).font(.caption).foregroundStyle(.secondary)
+                Text("\(model.pageCount) stron").font(.callout).foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    private var toolHint: String {
+        switch model.tool {
+        case .select: return "Kliknij nakładkę, by przesunąć • Delete usuwa"
+        case .text: return "Kliknij, by dodać tekst"
+        case .draw: return "Rysuj przeciągając"
+        case .whiteout: return "Przeciągnij, by zamalować"
+        case .signature: return model.signatures.isEmpty ? "Dodaj podpis w panelu po prawej" : "Kliknij, by wstawić podpis"
+        }
     }
 }
 
@@ -115,6 +128,7 @@ struct PageThumbnailList: View {
                                 .resizable().scaledToFit()
                                 .frame(maxWidth: .infinity)
                                 .border(Color.secondary.opacity(0.3))
+                                .onTapGesture { model.goTo(item.index) }
                             Button {
                                 model.deletePage(item.index)
                             } label: {
@@ -251,6 +265,7 @@ struct SignatureCreatorSheet: View {
                 Text("Narysuj").tag(0)
                 Text("Wgraj obraz").tag(1)
                 Text("Zdjęcie z kartki").tag(2)
+                Text("Ze schowka").tag(3)
             }
             .pickerStyle(.segmented)
 
@@ -277,12 +292,22 @@ struct SignatureCreatorSheet: View {
                     .controlSize(.large)
                 }
                 .frame(width: 460, height: 170)
-            default:
+            case 2:
                 VStack(spacing: 10) {
                     Text("Wgraj zdjęcie podpisu na białej kartce. Skryba wytnie tło i zostawi sam podpis.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button("Wybierz zdjęcie…") {
                         if let url = pickImage() { model.importSignaturePhoto(url); dismiss() }
+                    }
+                    .controlSize(.large)
+                }
+                .frame(width: 460, height: 170)
+            default:
+                VStack(spacing: 10) {
+                    Text("Skopiuj podpis do schowka (np. zrzut ekranu Cmd-Shift-Ctrl-4 z podpisu w Podglądzie, Notatkach czy na stronie), a tutaj wklej. Białe tło zostanie wycięte.")
+                        .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("Wklej ze schowka") {
+                        if model.importSignatureFromClipboard() { dismiss() }
                     }
                     .controlSize(.large)
                 }

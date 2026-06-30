@@ -110,6 +110,14 @@ public enum PDFEditing {
         page.addAnnotation(ImageStampAnnotation(image: image, bounds: bounds))
     }
 
+    /// Czy adnotacja jest naszą edytowalną nakładką (do zaznaczania/przesuwania/usuwania).
+    /// Pomijamy oryginalne pola formularzy/linki dokumentu.
+    public static func isEditable(_ annotation: PDFAnnotation) -> Bool {
+        if annotation is ImageStampAnnotation { return true }
+        let editable: Set<String> = ["Square", "FreeText", "Ink", "Stamp", "Highlight", "Underline"]
+        return editable.contains(annotation.type ?? "")
+    }
+
     // MARK: - Eksport (spłaszczenie)
 
     /// PDF ze wszystkimi nakładkami wtopionymi na stałe (podpisy, rysunki, tekst).

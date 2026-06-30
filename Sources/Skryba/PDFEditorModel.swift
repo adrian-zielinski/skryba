@@ -43,6 +43,8 @@ final class PDFEditorModel: ObservableObject {
     @Published var isDirty = false
     /// Bump, by wymusić odświeżenie PDFView i miniatur po zmianach.
     @Published var revision = 0
+    /// Żądanie przewinięcia do strony (klik w miniaturę). Płótno realizuje i czyści.
+    @Published var scrollToPage: Int?
 
     let store = SignatureStore.shared
 
@@ -75,6 +77,16 @@ final class PDFEditorModel: ObservableObject {
     private func bump() {
         pageCount = document?.pageCount ?? 0
         revision += 1
+    }
+
+    func goTo(_ index: Int) { scrollToPage = index }
+
+    /// Po przesunięciu adnotacji: oznacz zmiany i odśwież widok.
+    func annotationChanged() { isDirty = true; revision += 1 }
+
+    func deleteAnnotation(_ annotation: PDFAnnotation, onPage index: Int) {
+        document?.page(at: index)?.removeAnnotation(annotation)
+        annotationChanged()
     }
 
     // MARK: - Strony
@@ -130,9 +142,22 @@ final class PDFEditorModel: ObservableObject {
     }
 
     func saveDrawnSignature(paths: [NSBezierPath], size: NSSize) {
+        guard !paths.isEmpty else { return }
+        // Narysowany ślad jest już na przezroczystym tle — zapisujemy bez wycinania.
         let img = SignatureProcessor.image(fromPaths: paths, size: size, color: .black, lineWidth: 3)
-        guard let trimmed = SignatureProcessor.removeBackground(img, whiteThreshold: 0.98) ?? Optional(img) else { return }
-        try? store.add(trimmed); refreshSignatures()
+        try? store.add(img); refreshSignatures()
+    }
+
+    /// Wklej podpis ze schowka (np. zrzut ekranu podpisu z Podglądu/strony) i wytnij tło.
+    @discardableResult
+    func importSignatureFromClipboard() -> Bool {
+        guard let img = NSImage(pasteboard: NSPasteboard.general) else {
+            statusMessage = "W schowku nie ma obrazu"
+            return false
+        }
+        let processed = SignatureProcessor.removeBackground(img) ?? img
+        try? store.add(processed); refreshSignatures()
+        return true
     }
 
     func deleteSignature(_ url: URL) {

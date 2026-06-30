@@ -481,6 +481,10 @@ do {
     }
     t.check(transparentCount > 0, "removeBackground: tło stało się przezroczyste")
     t.check(opaqueCount > 0, "removeBackground: tusz pozostał widoczny")
+    // Róg to papier — musi być CAŁKOWICIE przezroczysty (nie półprzezroczysty).
+    t.check(px[3] == 0, "removeBackground: róg (papier) w pełni przezroczysty [alpha \(px[3])]")
+    // Większość obrazu (papier) powinna zniknąć całkowicie.
+    t.check(transparentCount > (w * h) / 2, "removeBackground: papier zniknął w większości [\(transparentCount)/\(w*h)]")
 
     // Biblioteka podpisów (w temp).
     let storeDir = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-sig-\(UUID().uuidString)")
