@@ -685,4 +685,101 @@ if ProcessInfo.processInfo.environment["SKRYBA_NET_TEST"] == "1" {
     t.skip("ustaw SKRYBA_NET_TEST=1, aby pobrać i przetestować realny link")
 }
 
+// MARK: - Ekstrakcja PDF → Markdown (posiekana warstwa)
+
+t.suite("PDF → Markdown")
+
+// Detekcja „posiekanej” warstwy tekstowej (fragmenty jak w raporcie carVertical).
+let garbled = """
+Typ skrzyni biegów:A
+ut
+omat
+yczna
+Pojemność sk
+k
+o
+owa układ
+u
+napędowego: 6,4 l
+Moc
+O
+cena carVert
+ical®
+Be
+ta
+"""
+let normalLayer = """
+Umowa najmu lokalu mieszkalnego
+Niniejsza umowa zostaje zawarta pomiędzy stronami w celu określenia warunków.
+Wynajmujący oświadcza, że jest właścicielem lokalu i przekazuje go najemcy.
+Najemca zobowiązuje się do terminowego regulowania czynszu oraz utrzymania.
+Wszelkie zmiany niniejszej umowy wymagają formy pisemnej pod rygorem nieważności.
+W sprawach nieuregulowanych stosuje się przepisy Kodeksu cywilnego.
+"""
+t.check(PDFExtractor.isGarbledLayer(garbled), "wykrywa posiekaną warstwę (dużo krótkich fragmentów)")
+t.check(!PDFExtractor.isGarbledLayer(normalLayer), "nie myli normalnej warstwy z posiekaną")
+t.check(PDFExtractor.needsOCR(pageString: garbled), "posiekana strona → OCR")
+t.check(PDFExtractor.needsOCR(pageString: ""), "pusta strona (skan) → OCR")
+t.check(!PDFExtractor.needsOCR(pageString: normalLayer), "dobra warstwa → bez OCR")
+
+// Wykrywanie nagłówków po rozmiarze pisma, z odfiltrowaniem nie-nagłówków.
+t.equal(PDFExtractor.classifyHeading(text: "Cena rynkowa", sizeRatio: 1.65), 3, "duże krótkie pismo → ### ")
+t.equal(PDFExtractor.classifyHeading(text: "Specyfikacja i wyposażenie", sizeRatio: 1.9), 2, "bardzo duże pismo → ## ")
+t.equal(PDFExtractor.classifyHeading(text: "88", sizeRatio: 2.0), 0, "sama liczba nie jest nagłówkiem")
+t.equal(PDFExtractor.classifyHeading(text: "• Podsumowanie", sizeRatio: 1.6), 0, "punkt listy nie jest nagłówkiem")
+t.equal(PDFExtractor.classifyHeading(text: "To jest zwykłe zdanie zakończone kropką.", sizeRatio: 1.6), 0, "zdanie z kropką nie jest nagłówkiem")
+t.equal(PDFExtractor.classifyHeading(text: "Przebieg", sizeRatio: 1.0), 0, "przeciętne pismo → akapit")
+
+// Czyszczenie wiodących śmieci-ikon z OCR (bez ruszania liczb i skrótów).
+t.equal(PDFExtractor.stripLeadingIconJunk("+* Wykładzina na podłodze"), "Wykładzina na podłodze", "ikona: usuwa '+*'")
+t.equal(PDFExtractor.stripLeadingIconJunk("o= Czy pojazd przeszedł przegląd?"), "Czy pojazd przeszedł przegląd?", "ikona: usuwa 'o='")
+t.equal(PDFExtractor.stripLeadingIconJunk("® Kradzież"), "Kradzież", "ikona: usuwa '®'")
+t.equal(PDFExtractor.stripLeadingIconJunk("354 kW mocy"), "354 kW mocy", "ikona: nie rusza liczby '354'")
+t.equal(PDFExtractor.stripLeadingIconJunk("6,4 l pojemności"), "6,4 l pojemności", "ikona: nie rusza '6,4'")
+t.equal(PDFExtractor.stripLeadingIconJunk("np. taksówka"), "np. taksówka", "ikona: nie rusza skrótu 'np.'")
+
+// Sklejanie zawiniętych linii w akapity + osobny nagłówek.
+let merged = PDFExtractor.mergeParagraphs([
+    .init(text: "Sprawdzenie statusu prawnego"),
+    .init(text: "i finansowego"),
+    .init(text: "Cena rynkowa", sizeRatio: 1.65),
+    .init(text: "Nie stwierdzono ryzyka"),
+    .init(text: "finansowego ani prawnego."),
+])
+t.equal(merged.count, 3, "merge: 3 bloki (akapit, nagłówek, akapit)")
+t.equal(merged.first?.text, "Sprawdzenie statusu prawnego i finansowego", "merge: zawinięta linia doklejona")
+t.check(merged.contains { $0.heading == 3 && $0.text == "Cena rynkowa" }, "merge: nagłówek zachowany osobno")
+t.equal(merged.last?.text, "Nie stwierdzono ryzyka finansowego ani prawnego.", "merge: drugi akapit sklejony")
+
+// Usuwanie powtarzalnej stopki: warianty różniące się tylko datą/numerem znikają
+// (klucz pomija cyfry), a treść różniąca się słowami zostaje.
+let uniqueWords = ["kotach", "psach", "domu", "lesie", "rzece"]
+let pages = (0..<5).map { i in
+    [PDFExtractor.Line(text: "Wygenerowano 0\(i).07.2026 | Strona \(i)"),
+     PDFExtractor.Line(text: "Rozdział o \(uniqueWords[i]) i jego historii")]
+}
+let cleaned = PDFExtractor.dropBoilerplate(pages)
+t.check(cleaned.allSatisfy { $0.count == 1 }, "boilerplate: stopka (różne daty) usunięta z każdej strony")
+t.check(cleaned.allSatisfy { $0.first?.text.hasPrefix("Rozdział o") == true }, "boilerplate: treść (różne słowa) zachowana")
+
+// Opcjonalny test end-to-end na realnym pliku PDF (ustaw SKRYBA_PDF_TEST=ścieżka).
+if let pdfPath = ProcessInfo.processInfo.environment["SKRYBA_PDF_TEST"],
+   FileManager.default.fileExists(atPath: pdfPath) {
+    do {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-pdfmd-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let out = try await DocumentConverter.convert(input: URL(fileURLWithPath: pdfPath), to: .md, outputDirectory: base)
+        let md = try String(contentsOf: out, encoding: .utf8)
+        let lines = md.split(separator: "\n", omittingEmptySubsequences: true)
+        let singleChar = lines.filter { $0.trimmingCharacters(in: .whitespaces).count == 1 }.count
+        t.check(md.count > 200, "PDF E2E: powstał niepusty Markdown (\(md.count) znaków)")
+        t.check(singleChar <= 3, "PDF E2E: brak posiekania — prawie brak jednoznakowych linii (\(singleChar))")
+        t.check(md.contains("# "), "PDF E2E: są nagłówki Markdown")
+    } catch {
+        t.check(false, "PDF E2E rzucił błąd: \(error)")
+    }
+} else {
+    t.skip("ustaw SKRYBA_PDF_TEST=ścieżka/do.pdf, aby przetestować realny PDF")
+}
+
 t.finish()

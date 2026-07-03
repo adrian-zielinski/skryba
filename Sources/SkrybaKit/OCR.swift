@@ -60,6 +60,34 @@ enum OCR {
         return parts.joined(separator: "\n\n")
     }
 
+    /// Pojedyncza rozpoznana linia wraz z wysokością pisma (w punktach strony PDF).
+    /// Wysokość służy do wykrywania nagłówków (większe pismo = nagłówek).
+    public struct Line: Sendable {
+        public let text: String
+        public let heightPt: CGFloat
+        public init(text: String, heightPt: CGFloat) { self.text = text; self.heightPt = heightPt }
+    }
+
+    /// OCR jednej strony PDF z zachowaniem kolejności czytania Vision oraz rozmiaru pisma.
+    /// Nie sortujemy po współrzędnych — natywna kolejność Vision lepiej radzi sobie
+    /// z układem wielokolumnowym (karty/kolumny) niż sortowanie po osi Y.
+    static func recognizePageLines(_ page: PDFPage) -> [Line] {
+        guard let cg = renderPage(page) else { return [] }
+        let pageHeight = page.bounds(for: .mediaBox).height
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.recognitionLanguages = supportedLanguages()
+        let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+        do { try handler.perform([request]) } catch { return [] }
+        return (request.results ?? []).compactMap { obs in
+            guard let candidate = obs.topCandidates(1).first else { return nil }
+            let text = candidate.string.trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { return nil }
+            return Line(text: text, heightPt: obs.boundingBox.height * pageHeight)
+        }
+    }
+
     private static func renderPage(_ page: PDFPage, scale: CGFloat = 2.0) -> CGImage? {
         let bounds = page.bounds(for: .mediaBox)
         let width = Int(bounds.width * scale)

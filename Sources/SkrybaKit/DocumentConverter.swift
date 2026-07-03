@@ -62,14 +62,15 @@ public enum DocumentConverter {
                 try NSAttributedString(url: url, options: [.documentType: type], documentAttributes: nil)
             }
         case .pdf:
-            guard let doc = PDFDocument(url: url) else { throw SkrybaError.documentReadFailed(url.lastPathComponent) }
-            let text = (doc.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            // Skan / PDF bez warstwy tekstowej → OCR stron.
-            if text.count < max(20, doc.pageCount * 5) {
-                let ocr = OCR.recognizePDF(url)
-                if ocr.count > text.count { return NSAttributedString(string: ocr) }
+            // Ustrukturyzowana ekstrakcja: dla każdej strony wybiera warstwę tekstową
+            // albo OCR (skan lub „posiekana” warstwa graficznego raportu), skleja
+            // akapity i wykrywa nagłówki. Zwraca nil tylko dla pustego/nieczytelnego
+            // dokumentu — wtedy schodzimy do prostego odczytu warstwy tekstowej.
+            if let rich = PDFExtractor.attributed(from: url, shouldCancel: shouldCancel) {
+                return rich
             }
-            return NSAttributedString(string: text)
+            guard let doc = PDFDocument(url: url) else { throw SkrybaError.documentReadFailed(url.lastPathComponent) }
+            return NSAttributedString(string: (doc.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         case .pptx, .xlsx:
             return NSAttributedString(string: try OfficeText.extractText(from: url, format: format))
         case .key, .numbers, .pages:

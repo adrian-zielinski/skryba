@@ -173,6 +173,16 @@ enum Markdown {
     }
 
     private static func renderParagraph(_ attr: NSAttributedString) -> String {
+        // Nagłówek (np. z PDF-a): cały akapit → `##`/`###`, bez dalszej emfazy.
+        if attr.length > 0,
+           let level = attr.attribute(.skrybaHeading, at: 0, effectiveRange: nil) as? Int,
+           level > 0 {
+            let text = attr.string
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            return String(repeating: "#", count: level) + " " + text
+        }
+
         var result = ""
         let range = NSRange(location: 0, length: attr.length)
         attr.enumerateAttributes(in: range, options: []) { attrs, subRange, _ in
