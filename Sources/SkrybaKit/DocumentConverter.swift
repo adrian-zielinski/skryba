@@ -19,17 +19,25 @@ public enum DocumentConverter {
     }
 
     /// Konwertuje `input` do `target` i zapisuje w `outputDirectory`.
+    /// `imageQuality` (0…1) dotyczy wyłącznie zapisu obraz→JPG.
     @discardableResult
     public static func convert(
         input: URL,
         to target: DocumentFormat,
         outputDirectory: URL,
+        imageQuality: Double = 0.9,
         shouldCancel: (() -> Bool)? = nil
     ) async throws -> URL {
         guard let source = detect(input) else {
             throw SkrybaError.unsupportedDocument(input.lastPathComponent)
         }
         if shouldCancel?() == true { throw SkrybaError.cancelled }
+
+        // Obraz → obraz (JPG/PNG): pomijamy ścieżkę tekstową/OCR i transkodujemy piksele.
+        if source.category == .image, target.category == .image {
+            return try ImageConverter.convert(input: input, to: target,
+                                              quality: imageQuality, outputDirectory: outputDirectory)
+        }
 
         let attributed = try await read(url: input, format: source, shouldCancel: shouldCancel)
         if shouldCancel?() == true { throw SkrybaError.cancelled }
@@ -75,7 +83,8 @@ public enum DocumentConverter {
             return NSAttributedString(string: try OfficeText.extractText(from: url, format: format))
         case .key, .numbers, .pages:
             return NSAttributedString(string: try iWorkBridge.extractText(from: url, format: format, shouldCancel: shouldCancel))
-        case .image:
+        case .image, .png, .jpg:
+            // Obraz jako źródło tekstu → OCR. (Konwersja obraz→obraz idzie osobną gałęzią.)
             return NSAttributedString(string: try OCR.recognizeImageFile(url))
         }
     }
@@ -106,7 +115,8 @@ public enum DocumentConverter {
             try data.write(to: url)
         case .pdf:
             try PDFRenderer.pdfData(from: attr).write(to: url)
-        case .pptx, .xlsx, .key, .numbers, .pages, .image:
+        case .pptx, .xlsx, .key, .numbers, .pages, .image, .png, .jpg:
+            // Cele obrazowe obsługuje ImageConverter (gałąź obraz→obraz w convert()).
             throw SkrybaError.unsupportedTarget(format.displayName)
         }
     }

@@ -22,14 +22,18 @@ fi
 
 echo "▸ Kompilacja (release)..."
 swift build -c release --product skryba
+swift build -c release --product skryba-cli
 
 BIN_DIR="$(swift build -c release --product skryba --show-bin-path)"
 EXECUTABLE="$BIN_DIR/skryba"
+CLI="$BIN_DIR/skryba-cli"
 [ -f "$EXECUTABLE" ] || { echo "BŁĄD: brak binarki: $EXECUTABLE"; exit 1; }
+[ -f "$CLI" ] || { echo "BŁĄD: brak binarki CLI: $CLI"; exit 1; }
 
 echo "▸ Składanie bundla (staging poza iCloud)..."
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources" "$STAGE/Contents/Frameworks"
 cp "$EXECUTABLE" "$STAGE/Contents/MacOS/$APP_NAME"
+cp "$CLI" "$STAGE/Contents/MacOS/skryba-cli"          # osadzone CLI dla Szybkich akcji Findera
 cp -R "$ROOT/Frameworks/whisper.xcframework/macos-arm64_x86_64/whisper.framework" \
       "$STAGE/Contents/Frameworks/whisper.framework"
 
@@ -63,16 +67,27 @@ PLIST
 
 echo "▸ rpath do frameworka + czyszczenie atrybutów..."
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$STAGE/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$STAGE/Contents/MacOS/skryba-cli" 2>/dev/null || true
 xattr -cr "$STAGE"
 find "$STAGE" -name '._*' -delete 2>/dev/null || true
 find "$STAGE" -name '.DS_Store' -delete 2>/dev/null || true
 
 echo "▸ Podpis ad-hoc..."
 codesign --force --sign - "$STAGE/Contents/Frameworks/whisper.framework"
+codesign --force --sign - "$STAGE/Contents/MacOS/skryba-cli"
 codesign --force --sign - "$STAGE"
 
 echo "▸ Weryfikacja podpisu..."
 codesign --verify --deep --strict "$STAGE" && echo "  podpis OK"
+
+# Smoke-test: osadzone CLI MUSI wystartować (linkuje whisper.framework przez rpath jeszcze
+# przed main). Bez tego nieudany patch rpath przeszedłby podpis i trafił do paczki jako
+# niewystartowalna binarka — Szybka akcja Findera padałaby z błędem dyld.
+echo "▸ Test startu osadzonego CLI (rpath + whisper.framework)..."
+if ! "$STAGE/Contents/MacOS/skryba-cli" image --help >/dev/null 2>&1; then
+    echo "BŁĄD: osadzone skryba-cli nie startuje — sprawdź rpath/whisper.framework."; exit 1
+fi
+echo "  CLI startuje OK"
 
 echo "▸ Pakowanie do $OUT_DIR ..."
 mkdir -p "$OUT_DIR"

@@ -2,6 +2,8 @@ import Foundation
 import AppKit
 import PDFKit
 import Vision
+import ImageIO
+import UniformTypeIdentifiers
 import SkrybaKit
 
 // Lekki harness testowy (działa wszędzie, nie wymaga XCTest ani Xcode).
@@ -358,6 +360,307 @@ do {
 }
 catch is CancellationError {}
 catch { t.check(false, "Test OCR rzucił błąd: \(error)") }
+
+// MARK: - Konwersja obrazów (JPG/PNG)
+
+t.suite("Konwersja obrazów")
+
+func imageUTI(_ url: URL) -> String? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    return CGImageSourceGetType(src) as String?
+}
+func imagePixelSize(_ url: URL) -> (w: Int, h: Int)? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+          let w = props[kCGImagePropertyPixelWidth] as? Int,
+          let h = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
+    return (w, h)
+}
+func topLeftPixel(_ url: URL) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8)? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+    let w = cg.width, h = cg.height
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    return (px[0], px[1], px[2], px[3])
+}
+func writePNG(_ cg: CGImage, to url: URL) -> Bool {
+    guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { return false }
+    CGImageDestinationAddImage(dest, cg, nil)
+    return CGImageDestinationFinalize(dest)
+}
+func makeTransparentPNG(to url: URL) -> Bool {
+    let w = 100, h = 100
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+    ctx.clear(CGRect(x: 0, y: 0, width: w, height: h))           // tło całkowicie przezroczyste
+    ctx.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+    ctx.fill(CGRect(x: 30, y: 30, width: 40, height: 40))        // nieprzezroczysty czerwony kwadrat
+    guard let cg = ctx.makeImage() else { return false }
+    return writePNG(cg, to: url)
+}
+func makeNoisePNG(to url: URL, size: Int = 256) -> Bool {
+    let w = size, h = size
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    var seed: UInt64 = 0x9E3779B97F4A7C15                        // deterministyczny LCG (test bez losowości)
+    func next() -> UInt8 { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return UInt8((seed >> 33) & 0xFF) }
+    for i in 0..<(w * h) { px[i*4] = next(); px[i*4+1] = next(); px[i*4+2] = next(); px[i*4+3] = 255 }
+    guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+        let cg = ctx.makeImage() else { return false }
+    return writePNG(cg, to: url)
+}
+func makeOrientedJPEG(to url: URL, w: Int, h: Int, orientation: Int) -> Bool {
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+    ctx.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    guard let cg = ctx.makeImage(),
+          let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return false }
+    CGImageDestinationAddImage(dest, cg, [kCGImagePropertyOrientation: orientation] as CFDictionary)
+    return CGImageDestinationFinalize(dest)
+}
+func fileSize(_ url: URL) -> Int {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+    return (attrs?[.size] as? Int) ?? 0
+}
+
+// Cele: obraz oferuje png/jpg (i wciąż OCR-owy txt); tekst nie oferuje celów obrazowych.
+let imgTargetsRaw = DocumentFormat.targets(for: .image, includeAppleApps: false).map(\.rawValue)
+t.check(imgTargetsRaw.contains("png") && imgTargetsRaw.contains("jpg"), "Obraz: cele zawierają png i jpg")
+t.check(imgTargetsRaw.contains("txt"), "Obraz: nadal jest cel txt (OCR)")
+let mdTargetsRaw = DocumentFormat.targets(for: .md, includeAppleApps: false).map(\.rawValue)
+t.check(!mdTargetsRaw.contains("png") && !mdTargetsRaw.contains("jpg"), "Tekst (md): brak celów obrazowych")
+
+// PNG → JPG i JPG → PNG: typ i wymiary.
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let png = base.appendingPathComponent("foto.png")
+    guard makeTextPNG("Zdjecie testowe", to: png) else { t.skip("nie wygenerowano PNG"); throw CancellationError() }
+
+    let jpg = try await DocumentConverter.convert(input: png, to: .jpg, outputDirectory: base)
+    t.equal(jpg.pathExtension, "jpg", "PNG→JPG: rozszerzenie .jpg")
+    t.equal(imageUTI(jpg), "public.jpeg", "PNG→JPG: wynik to JPEG")
+    let srcSize = imagePixelSize(png), outSize = imagePixelSize(jpg)
+    t.check(srcSize != nil && outSize != nil && srcSize! == outSize!,
+            "PNG→JPG: wymiary zachowane [źródło \(String(describing: srcSize)) → wynik \(String(describing: outSize))]")
+
+    let png2 = try await DocumentConverter.convert(input: jpg, to: .png, outputDirectory: base)
+    t.equal(imageUTI(png2), "public.png", "JPG→PNG: wynik to PNG")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test PNG↔JPG rzucił błąd: \(error)") }
+
+// PNG z przezroczystością → JPG: tło spłaszczone na biel, brak alfy.
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-alpha-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let png = base.appendingPathComponent("przezr.png")
+    guard makeTransparentPNG(to: png) else { t.skip("nie wygenerowano PNG z alfą"); throw CancellationError() }
+    let jpg = try ImageConverter.convert(input: png, to: .jpg, quality: 0.9, outputDirectory: base)
+    if let c = topLeftPixel(jpg) {
+        t.check(c.r > 240 && c.g > 240 && c.b > 240, "PNG(alfa)→JPG: przezroczyste tło stało się białe [\(c)]")
+        t.check(c.a == 255, "PNG(alfa)→JPG: wynik nieprzezroczysty")
+    } else { t.check(false, "nie odczytano piksela wyniku") }
+}
+catch is CancellationError {}
+catch { t.check(false, "Test przezroczystości rzucił błąd: \(error)") }
+
+// Jakość JPG respektowana: niższa jakość → mniejszy plik.
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-q-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let src = base.appendingPathComponent("szum.png")
+    guard makeNoisePNG(to: src) else { t.skip("nie wygenerowano obrazu szumu"); throw CancellationError() }
+    let low = try ImageConverter.convert(input: src, to: .jpg, quality: 0.1, outputDirectory: base)
+    let high = try ImageConverter.convert(input: src, to: .jpg, quality: 0.95, outputDirectory: base)
+    t.check(fileSize(high) > fileSize(low), "Jakość JPG: 95% > 10% rozmiaru [\(fileSize(low)) < \(fileSize(high))]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test jakości JPG rzucił błąd: \(error)") }
+
+// Orientacja EXIF wypalana: JPEG 100×40 z orientacją 6 → obraz pionowy 40×100.
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-ori-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let oriented = base.appendingPathComponent("obrocony.jpg")
+    guard makeOrientedJPEG(to: oriented, w: 100, h: 40, orientation: 6) else { t.skip("nie wygenerowano JPEG z orientacją"); throw CancellationError() }
+    let out = try ImageConverter.convert(input: oriented, to: .png, quality: 0.9, outputDirectory: base)
+    let sz = imagePixelSize(out)
+    t.check(sz.map { $0.w == 40 && $0.h == 100 } ?? false,
+            "Orientacja: 100×40 (orient 6) → wypalone 40×100 [\(String(describing: sz))]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test orientacji rzucił błąd: \(error)") }
+
+// Szeroki gamut (Display P3) zachowany przy wypalaniu orientacji — nie klamrujemy do sRGB.
+func imageColorSpaceName(_ url: URL) -> String? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let cg = CGImageSourceCreateImageAtIndex(src, 0, nil),
+          let cs = cg.colorSpace, let name = cs.name else { return nil }
+    return name as String
+}
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-p3-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    guard let p3 = CGColorSpace(name: CGColorSpace.displayP3) else { t.skip("brak przestrzeni P3"); throw CancellationError() }
+    let w = 100, h = 40
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: p3, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
+          let redP3 = CGColor(colorSpace: p3, components: [1, 0, 0, 1]) else {
+        t.skip("nie zbudowano kontekstu P3"); throw CancellationError()
+    }
+    ctx.setFillColor(redP3)
+    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    let src = base.appendingPathComponent("p3.jpg")
+    guard let cg = ctx.makeImage(),
+          let dest = CGImageDestinationCreateWithURL(src as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
+        t.skip("nie zapisano źródła P3"); throw CancellationError()
+    }
+    CGImageDestinationAddImage(dest, cg, [kCGImagePropertyOrientation: 6] as CFDictionary)   // wymusza gałąź oriented()
+    _ = CGImageDestinationFinalize(dest)
+
+    // Oba cele muszą zachować P3. JPG to realna ścieżka (spłaszczanie alfy nie może zrzucić gamutu).
+    let outJpg = try ImageConverter.convert(input: src, to: .jpg, quality: 0.9, outputDirectory: base)
+    let outPng = try ImageConverter.convert(input: src, to: .png, quality: 0.9, outputDirectory: base)
+    let jpgName = imageColorSpaceName(outJpg), pngName = imageColorSpaceName(outPng)
+    t.check(jpgName?.contains("P3") ?? false,
+            "Szeroki gamut (JPG): profil P3 zachowany przy obrocie [\(String(describing: jpgName))]")
+    t.check(pngName?.contains("P3") ?? false,
+            "Szeroki gamut (PNG): profil P3 zachowany przy obrocie [\(String(describing: pngName))]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test gamutu P3 rzucił błąd: \(error)") }
+
+// P3 z KANAŁEM ALFA → JPG: spłaszczanie na biel musi zachować gamut (nie zrzucać do sRGB).
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-p3a-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    guard let p3 = CGColorSpace(name: CGColorSpace.displayP3) else { t.skip("brak P3"); throw CancellationError() }
+    let w = 80, h = 80
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: p3, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+          let redP3 = CGColor(colorSpace: p3, components: [1, 0, 0, 1]) else {
+        t.skip("nie zbudowano kontekstu P3+alfa"); throw CancellationError()
+    }
+    ctx.clear(CGRect(x: 0, y: 0, width: w, height: h))                 // tło przezroczyste
+    ctx.setFillColor(redP3)
+    ctx.fill(CGRect(x: 20, y: 20, width: 40, height: 40))             // nasycony czerwony kwadrat P3
+    let src = base.appendingPathComponent("p3alpha.png")
+    guard let cg = ctx.makeImage(), writePNG(cg, to: src) else { t.skip("nie zapisano P3+alfa"); throw CancellationError() }
+
+    let out = try ImageConverter.convert(input: src, to: .jpg, quality: 0.9, outputDirectory: base)
+    let name = imageColorSpaceName(out)
+    t.check(name?.contains("P3") ?? false,
+            "P3 z alfą → JPG: gamut zachowany po spłaszczeniu (nie sRGB) [\(String(describing: name))]")
+    if let c = topLeftPixel(out) {
+        t.check(c.a == 255, "P3 z alfą → JPG: wynik nieprzezroczysty")
+    }
+}
+catch is CancellationError {}
+catch { t.check(false, "Test P3+alfa rzucił błąd: \(error)") }
+
+// Kolizja nazw: druga konwersja tego samego celu → sufiks -2 (bez nadpisania).
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-col-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let png = base.appendingPathComponent("kadr.png")
+    guard makeTextPNG("Kadr", to: png) else { t.skip("nie wygenerowano PNG"); throw CancellationError() }
+    let a = try ImageConverter.convert(input: png, to: .jpg, quality: 0.9, outputDirectory: base)
+    let b = try ImageConverter.convert(input: png, to: .jpg, quality: 0.9, outputDirectory: base)
+    t.equal(a.lastPathComponent, "kadr.jpg", "Kolizja: pierwszy bez sufiksu")
+    t.equal(b.lastPathComponent, "kadr-2.jpg", "Kolizja: drugi z sufiksem -2")
+    t.check(FileManager.default.fileExists(atPath: a.path) && FileManager.default.fileExists(atPath: b.path),
+            "Kolizja: oba pliki istnieją")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test kolizji obrazów rzucił błąd: \(error)") }
+
+// Opcjonalny E2E na realnym pliku (np. DNG): SKRYBA_IMG_TEST=ścieżka
+if let imgPath = ProcessInfo.processInfo.environment["SKRYBA_IMG_TEST"],
+   FileManager.default.fileExists(atPath: imgPath) {
+    do {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-img-e2e-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let out = try ImageConverter.convert(input: URL(fileURLWithPath: imgPath), to: .jpg, quality: 0.9, outputDirectory: base)
+        t.equal(imageUTI(out), "public.jpeg", "E2E: realny obraz → JPEG")
+        t.check((imagePixelSize(out)?.w ?? 0) > 0, "E2E: wynik ma wymiary [\(String(describing: imagePixelSize(out)))]")
+        let srcName = imageColorSpaceName(URL(fileURLWithPath: imgPath))
+        let outName = imageColorSpaceName(out)
+        t.check(srcName == nil || outName == srcName,
+                "E2E: profil koloru zachowany [źródło \(String(describing: srcName)) → wynik \(String(describing: outName))]")
+    } catch {
+        t.check(false, "E2E obrazu rzucił błąd: \(error)")
+    }
+} else {
+    t.skip("ustaw SKRYBA_IMG_TEST=ścieżka/do/obrazu (np. DNG), aby przetestować realny plik")
+}
+
+// MARK: - Szybkie akcje Findera (instalator)
+
+t.suite("Akcje Findera")
+do {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("skryba-svc-\(UUID().uuidString)")
+    let services = base.appendingPathComponent("Services")
+    defer { try? FileManager.default.removeItem(at: base) }
+    let cli = "/Applications/Skryba.app/Contents/MacOS/skryba-cli"
+
+    let installed = try FinderQuickAction.install(cliPath: cli, to: services)
+    t.equal(installed.count, 2, "Instalacja: powstały dwa bundle")
+
+    let jpgDir = services.appendingPathComponent("Konwertuj na JPG (Skryba).workflow/Contents")
+    let pngDir = services.appendingPathComponent("Konwertuj na PNG (Skryba).workflow/Contents")
+    let jpgWflow = jpgDir.appendingPathComponent("document.wflow")
+    let jpgInfo = jpgDir.appendingPathComponent("Info.plist")
+    let pngWflow = pngDir.appendingPathComponent("document.wflow")
+
+    t.check(FileManager.default.fileExists(atPath: jpgWflow.path), "JPG: document.wflow istnieje")
+    t.check(FileManager.default.fileExists(atPath: jpgInfo.path), "JPG: Info.plist istnieje")
+
+    // Poprawność plistów (łapie błędy escapowania XML).
+    func isValidPlist(_ url: URL) -> Bool {
+        guard let d = try? Data(contentsOf: url) else { return false }
+        return (try? PropertyListSerialization.propertyList(from: d, options: [], format: nil)) != nil
+    }
+    t.check(isValidPlist(jpgWflow), "JPG: document.wflow to poprawny plist")
+    t.check(isValidPlist(jpgInfo), "JPG: Info.plist to poprawny plist")
+    t.check(isValidPlist(pngWflow), "PNG: document.wflow to poprawny plist")
+
+    let jpgScript = (try? String(contentsOf: jpgWflow, encoding: .utf8)) ?? ""
+    let pngScript = (try? String(contentsOf: pngWflow, encoding: .utf8)) ?? ""
+    t.check(jpgScript.contains("--to jpg"), "JPG: skrypt konwertuje na jpg")
+    t.check(pngScript.contains("--to png"), "PNG: skrypt konwertuje na png")
+    t.check(jpgScript.contains(cli), "JPG: wpisana ścieżka do CLI")
+    t.check(jpgScript.contains("--beside-source"), "JPG: zapis obok oryginału")
+
+    let info = (try? String(contentsOf: jpgInfo, encoding: .utf8)) ?? ""
+    t.check(info.contains("public.image"), "JPG: usługa przyjmuje pliki obrazów")
+    t.check(info.contains("Konwertuj na JPG (Skryba)"), "JPG: nazwa pozycji w menu")
+    t.check(info.contains("runWorkflowAsService"), "JPG: NSMessage usługi")
+
+    t.check(FinderQuickAction.isInstalled(in: services), "isInstalled == true po instalacji")
+    try FinderQuickAction.uninstall(from: services)
+    t.check(!FinderQuickAction.isInstalled(in: services), "isInstalled == false po odinstalowaniu")
+}
+catch { t.check(false, "Test akcji Findera rzucił błąd: \(error)") }
 
 // MARK: - Edytor PDF i podpisy
 

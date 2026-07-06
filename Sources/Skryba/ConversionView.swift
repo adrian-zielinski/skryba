@@ -36,7 +36,32 @@ struct ConversionView: View {
             .disabled(model.availableTargets.isEmpty)
             .help("Na jaki format przekonwertować wrzucone pliki")
 
+            if model.targetFormat == .jpg {
+                Divider().frame(height: 16)
+                Text("Jakość JPG").foregroundStyle(.secondary)
+                Slider(value: $model.jpgQuality, in: 0.3...1.0)
+                    .frame(width: 110)
+                    .help("Wyższa jakość = większy plik. Zalecane ~90%.")
+                Text("\(Int((model.jpgQuality * 100).rounded()))%")
+                    .monospacedDigit()
+                    .frame(width: 40, alignment: .leading)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
+
+            Menu {
+                if model.finderActionsInstalled {
+                    Button("Odinstaluj z Findera") { model.uninstallFinderActions() }
+                } else {
+                    Button("Zainstaluj w Finderze") { model.installFinderActions() }
+                }
+            } label: {
+                Label("Szybkie akcje Findera", systemImage: "sparkles")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Konwersja zdjęć prawym przyciskiem w Finderze — bez otwierania aplikacji")
 
             Button { model.chooseInputFiles() } label: {
                 Label("Dodaj pliki", systemImage: "plus")
@@ -54,7 +79,7 @@ struct ConversionView: View {
                 .foregroundStyle(.secondary)
             Text("Przeciągnij dokument do konwersji")
                 .font(.title3)
-            Text("PDF, Word, Markdown, RTF, HTML, ODT, PowerPoint, Excel, Keynote, Numbers, Pages,\nobrazy i skany (OCR). Apka wykryje format i zapyta, na co przekonwertować.")
+            Text("PDF, Word, Markdown, RTF, HTML, ODT, PowerPoint, Excel, Keynote, Numbers, Pages,\nzdjęcia (DNG/HEIC/… → JPG/PNG) oraz skany (OCR). Apka wykryje format i zapyta, na co przekonwertować.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

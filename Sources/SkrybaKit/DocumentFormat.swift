@@ -5,7 +5,8 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
     case md, txt, rtf, html, docx, odt, pdf      // dokumenty tekstowe
     case pptx, xlsx                              // Office: prezentacja / arkusz
     case key, numbers, pages                     // Apple iWork (wymaga apki)
-    case image                                   // obraz/skan (OCR) — tylko źródło
+    case image                                   // obraz/skan — wykrywany typ pliku (źródło: OCR lub konwersja)
+    case png, jpg                                // obraz — cele konwersji (zapisywalne)
 
     public var id: String { rawValue }
 
@@ -26,6 +27,8 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
         case .numbers: return "Numbers (.numbers)"
         case .pages: return "Pages (.pages)"
         case .image: return "Obraz / skan (OCR)"
+        case .png: return "PNG (.png)"
+        case .jpg: return "JPG (.jpg)"
         }
     }
 
@@ -37,14 +40,14 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
         case .pptx: return .presentation
         case .xlsx: return .spreadsheet
         case .key, .numbers, .pages: return .iwork
-        case .image: return .image
+        case .image, .png, .jpg: return .image
         }
     }
 
     /// Czy potrafimy odczytać ten format natywnie (bez aplikacji Apple).
     public var nativeReadable: Bool {
         switch self {
-        case .md, .txt, .rtf, .html, .docx, .odt, .pdf, .pptx, .xlsx, .image: return true
+        case .md, .txt, .rtf, .html, .docx, .odt, .pdf, .pptx, .xlsx, .image, .png, .jpg: return true
         case .key, .numbers, .pages: return false
         }
     }
@@ -54,7 +57,7 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
     /// prezentacji/arkusza jest semantycznie problematyczny i nietestowalny z tła.
     public var nativeWritable: Bool {
         switch self {
-        case .md, .txt, .rtf, .html, .docx, .odt, .pdf: return true
+        case .md, .txt, .rtf, .html, .docx, .odt, .pdf, .png, .jpg: return true
         case .pptx, .xlsx, .key, .numbers, .pages, .image: return false
         }
     }
@@ -97,12 +100,16 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable {
     }
 
     /// Dostępne formaty docelowe dla danego źródła (bez samego źródła).
-    /// Po odczycie wszystko sprowadzamy do tekstu, więc cele to formaty zapisywalne.
+    /// Dokumenty tekstowe sprowadzamy do tekstu → cele tekstowe. Obraz na wejściu
+    /// dodatkowo oferuje cele obrazowe (JPG/PNG); cele obrazowe są dostępne WYŁĄCZNIE
+    /// dla źródła-obrazu (nie renderujemy dokumentu tekstowego do obrazu).
     public static func targets(for source: DocumentFormat, includeAppleApps: Bool) -> [DocumentFormat] {
         allCases.filter { target in
             guard target != source else { return false }
             if target.requiresAppleApp { return includeAppleApps }
-            return target.nativeWritable
+            guard target.nativeWritable else { return false }
+            if target.category == .image { return source.category == .image }
+            return true
         }
     }
 }

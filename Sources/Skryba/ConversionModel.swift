@@ -24,6 +24,13 @@ final class ConversionModel: ObservableObject {
     @Published var isProcessing = false
     @Published var statusMessage = "Przeciągnij dokument do konwersji"
 
+    /// Jakość zapisu obraz→JPG (0…1). PNG jest bezstratny i tego nie używa.
+    @Published var jpgQuality: Double = 0.9 {
+        didSet { UserDefaults.standard.set(jpgQuality, forKey: "conversionJpgQuality") }
+    }
+    /// Czy Szybkie akcje Findera są zainstalowane.
+    @Published var finderActionsInstalled: Bool = FinderQuickAction.isInstalled()
+
     private var queueTask: Task<Void, Never>?
     private var cancelFlag: CancellationFlag?
 
@@ -34,6 +41,9 @@ final class ConversionModel: ObservableObject {
             outputDirectory = FileManager.default
                 .urls(for: .documentDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("Konwersje", isDirectory: true)
+        }
+        if let q = UserDefaults.standard.object(forKey: "conversionJpgQuality") as? Double {
+            jpgQuality = q
         }
     }
 
@@ -114,10 +124,11 @@ final class ConversionModel: ObservableObject {
         persist()
         let target = targetFormat
         let outDir = outputDirectory
+        let quality = jpgQuality
         let flag = CancellationFlag()
         cancelFlag = flag
         isProcessing = true
-        queueTask = Task { await runQueue(target: target, outDir: outDir, cancelFlag: flag) }
+        queueTask = Task { await runQueue(target: target, outDir: outDir, quality: quality, cancelFlag: flag) }
     }
 
     func cancel() {
@@ -125,7 +136,7 @@ final class ConversionModel: ObservableObject {
         queueTask?.cancel()
     }
 
-    private func runQueue(target: DocumentFormat, outDir: URL, cancelFlag: CancellationFlag) async {
+    private func runQueue(target: DocumentFormat, outDir: URL, quality: Double, cancelFlag: CancellationFlag) async {
         let ids = jobs.filter { $0.status != .done }.map(\.id)
         var done = 0
         for jid in ids {
@@ -148,6 +159,7 @@ final class ConversionModel: ObservableObject {
                 // a fragmenty AppKit (HTML/DOCX/ODT/RTF) same skaczą na MainActor.
                 let result = try await DocumentConverter.convert(
                     input: url, to: target, outputDirectory: outDir,
+                    imageQuality: quality,
                     shouldCancel: { cancelFlag.isCancelled })
                 update(jid) { $0.status = .done; $0.outputURL = result }
                 done += 1
@@ -189,5 +201,31 @@ final class ConversionModel: ObservableObject {
         panel.prompt = "Dodaj"
         panel.message = "Wybierz dokumenty do konwersji"
         if panel.runModal() == .OK { addFiles(panel.urls) }
+    }
+
+    // MARK: - Szybkie akcje Findera
+
+    func installFinderActions() {
+        guard let cli = Bundle.main.url(forAuxiliaryExecutable: "skryba-cli")?.path else {
+            statusMessage = "Nie znaleziono skryba-cli w aplikacji. Zbuduj przez Scripts/build-app.sh."
+            return
+        }
+        do {
+            try FinderQuickAction.install(cliPath: cli)
+            finderActionsInstalled = true
+            statusMessage = "Gotowe. W Finderze: prawy przycisk na zdjęciu → Szybkie akcje → Konwertuj na JPG/PNG (Skryba)."
+        } catch {
+            statusMessage = "Nie udało się zainstalować akcji: \(error.localizedDescription)"
+        }
+    }
+
+    func uninstallFinderActions() {
+        do {
+            try FinderQuickAction.uninstall()
+            finderActionsInstalled = false
+            statusMessage = "Odinstalowano Szybkie akcje Findera."
+        } catch {
+            statusMessage = "Nie udało się odinstalować akcji: \(error.localizedDescription)"
+        }
     }
 }

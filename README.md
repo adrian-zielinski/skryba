@@ -2,7 +2,7 @@
 
 Transkrypcja audio/wideo, **konwersja dokumentów** i **edytor PDF** na Macu, w całości lokalnie. Przeciągasz pliki, wybierasz folder, dostajesz wynik. Nic nie wychodzi do internetu.
 
-Skryba używa [whisper.cpp](https://github.com/ggml-org/whisper.cpp) z akceleracją Metal (GPU), więc godzina nagrania liczy się kilka minut. Obsługuje wsady wielu plików i przetwarza je po kolei. Druga zakładka zamienia dokumenty między formatami (MD, DOCX, PDF, RTF, HTML, TXT, ODT; odczyt też z PowerPoint/Excel/Keynote/Numbers/Pages).
+Skryba używa [whisper.cpp](https://github.com/ggml-org/whisper.cpp) z akceleracją Metal (GPU), więc godzina nagrania liczy się kilka minut. Obsługuje wsady wielu plików i przetwarza je po kolei. Druga zakładka zamienia dokumenty między formatami (MD, DOCX, PDF, RTF, HTML, TXT, ODT; odczyt też z PowerPoint/Excel/Keynote/Numbers/Pages) oraz konwertuje zdjęcia (DNG/HEIC/… → JPG/PNG), również prawym przyciskiem prosto z Findera.
 
 > **English:** A native macOS app for fully local audio/video transcription. Drag files in, pick an output folder, get text out. Powered by whisper.cpp with Metal acceleration. Scroll down for the [English section](#english).
 
@@ -62,6 +62,11 @@ skryba-cli --out transkrypcje --lang pl nagranie.m4a folder/z/nagraniami
 skryba-cli --list-models          # legenda modeli
 skryba-cli --model-id small --format srt wywiad.mp4
 skryba-cli --model /sciezka/do/ggml-large-v3-turbo.bin nagranie.mov
+
+# Konwersja obrazów (natywnie, bez modeli):
+skryba-cli image --to jpg --quality 90 zdjecie.DNG   # DNG/HEIC/… → JPG (obok oryginału)
+skryba-cli image --to png --out ~/Obrazy skan.heic   # → PNG do wskazanego folderu
+skryba-cli install-finder-actions                    # akcje „Konwertuj na JPG/PNG" w Finderze
 ```
 
 ## Konwersja dokumentów (zakładka „Konwersja")
@@ -71,10 +76,17 @@ Druga zakładka działa jak transkrypcja, tylko zamiast modelu wybierasz **forma
 - **Pełna konwersja w obie strony:** Markdown, Word (DOCX), PDF, RTF, HTML, tekst (TXT), OpenDocument (ODT). Silnik natywny macOS, bez zależności.
 - **Odczyt z Office:** PowerPoint (PPTX) i Excel (XLSX) — Skryba wyciąga z nich tekst do dowolnego formatu tekstowego (np. „wrzuć prezentację → dostań .md").
 - **Odczyt z Apple iWork:** Keynote, Numbers, Pages — przez eksport zainstalowaną aplikacją Apple. Wymaga tych apek i jednorazowej zgody na automatyzację (Ustawienia › Prywatność i bezpieczeństwo › Automatyzacja).
+- **Zdjęcia → JPG/PNG:** wrzuć zdjęcie z iPhone'a (**DNG/ProRAW**, **HEIC/HEIF**) albo dowolny obraz (JPG, PNG, TIFF, GIF, BMP, WebP) i wybierz format docelowy JPG lub PNG. Suwak „Jakość JPG" (domyślnie 90%) steruje kompresją. Orientacja EXIF jest wypalana, więc wynik nie jest obrócony. Silnik natywny (ImageIO), bez zależności.
 - **OCR (tekst z obrazów):** wrzuć zdjęcie lub skan (PNG, JPG, HEIC, TIFF…) albo PDF/prezentację, gdzie tekst jest grafiką. Skryba rozpozna tekst lokalnie (Apple Vision, z polskim) i zapisze do dowolnego formatu tekstowego. Skanowane PDF-y bez warstwy tekstowej są OCR-owane automatycznie.
 - **Z transkrypcji prosto do konwersji:** przy ukończonym pliku klikasz „Konwertuj na…", a Skryba przerzuca go do zakładki Konwersja i czeka na wybór formatu.
 
-Ograniczenia (świadome): PDF i pliki Office/iWork na *wejściu* dają sam tekst (bez layoutu i obrazów). Zapis *do* PowerPointa/Excela/Keynote/Numbers nie jest obsługiwany — te formaty służą jako źródło, nie cel.
+Ograniczenia (świadome): PDF i pliki Office/iWork na *wejściu* dają sam tekst (bez layoutu i obrazów). Zapis *do* PowerPointa/Excela/Keynote/Numbers nie jest obsługiwany — te formaty służą jako źródło, nie cel. PNG z wielkich zdjęć (np. 48 Mpix) waży ~150 MB — do fotografii praktyczny jest JPG.
+
+### Konwersja z Findera (prawy przycisk, bez otwierania aplikacji)
+
+W zakładce Konwersja kliknij menu **„Szybkie akcje Findera" → „Zainstaluj w Finderze"**. Skryba doda do systemu dwie akcje. Potem w Finderze klikasz zdjęcie (lub kilka) **prawym przyciskiem → Szybkie akcje → „Konwertuj na JPG (Skryba)"** albo **„…na PNG (Skryba)"**. Plik przekonwertuje się **w tle, obok oryginału** — bez otwierania aplikacji. Kolizja nazw dostaje sufiks `-2`; oryginał zostaje nietknięty.
+
+Pod spodem działa osadzone `skryba-cli` (ten sam silnik co w aplikacji). Akcje odinstalujesz tym samym menu.
 
 ## Edytor PDF (zakładka „Edytor PDF")
 
@@ -115,6 +127,7 @@ Możesz też otworzyć `Package.swift` w Xcode i uruchomić schemat `skryba`.
 Sources/
   SkrybaKit/      rdzeń: dekoder audio, silnik whisper, modele, zapis, pobieranie z linku (MediaDownloader),
                   konwersja dokumentów (DocumentConverter, Markdown, OfficeText, iWorkBridge, OCR),
+                  konwersja obrazów (ImageConverter) i akcje Findera (FinderQuickAction),
                   edytor PDF (PDFEditing, SignatureProcessor, SignatureStore)
   Skryba/         aplikacja SwiftUI: zakładki Transkrypcja, Konwersja i Edytor PDF
   skryba-cli/     narzędzie wiersza poleceń (transkrypcja)
