@@ -1278,6 +1278,35 @@ do {
 catch is CancellationError {}
 catch { t.check(false, "Test obrotu podpisu rzucił błąd: \(error)") }
 
+// Regresja: strona z atrybutem obrotu (/Rotate) nie może gubić treści przy spłaszczeniu,
+// a cropBox mniejszy od mediaBox wyznacza rozmiar wyniku (to widzi PDFView).
+do {
+    // /Rotate 90: treść (czerwień) musi przetrwać, a wynik ma zamienione wymiary.
+    let rotPage = PDFPage(image: makeSolidImage(.red, size: NSSize(width: 400, height: 200)))!
+    rotPage.rotation = 90
+    let docR = PDFDocument(); docR.insert(rotPage, at: 0)
+    guard let dR = PDFEditing.flattenedData(docR), let outR = PDFDocument(data: dR),
+          let cgR = renderPDFPage(outR.page(at: 0)!), let bbR = redBoundingBox(cgR) else {
+        t.check(false, "obrót strony: spłaszczenie/render nie powiodło się"); throw CancellationError()
+    }
+    t.check(bbR.width * bbR.height > 1000, "obrót strony 90°: treść zachowana (nie pusta strona) [\(bbR)]")
+    let obR = outR.page(at: 0)!.bounds(for: .mediaBox)
+    t.check(obR.height > obR.width, "obrót strony 90°: wynik ma zamienione wymiary (wys > szer) [\(obR)]")
+
+    // cropBox 400×200 na mediaBox 400×400: wynik przyjmuje rozmiar cropBox.
+    let cropPage = PDFPage(image: makeSolidImage(.red, size: NSSize(width: 400, height: 400)))!
+    cropPage.setBounds(CGRect(x: 0, y: 0, width: 400, height: 200), for: .cropBox)
+    let docC = PDFDocument(); docC.insert(cropPage, at: 0)
+    guard let dC = PDFEditing.flattenedData(docC), let outC = PDFDocument(data: dC) else {
+        t.check(false, "cropBox: spłaszczenie nie powiodło się"); throw CancellationError()
+    }
+    let obC = outC.page(at: 0)!.bounds(for: .mediaBox)
+    t.check(approx(obC.width, 400, 1) && approx(obC.height, 200, 1),
+            "cropBox < mediaBox: wynik ma rozmiar cropBox (400×200) [\(obC)]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test obrotu/cropBox strony rzucił błąd: \(error)") }
+
 // MARK: - Usuwanie tła 2.0 (normalizacja oświetlenia + barwność + odszumianie)
 
 t.suite("Usuwanie tła 2.0")
@@ -1486,6 +1515,23 @@ do {
 }
 catch is CancellationError {}
 catch { t.check(false, "Test przycięcia rzucił błąd: \(error)") }
+
+// Regresja: blady, szary tusz (ołówek/jasny żel) na RÓWNOMIERNIE oświetlonym papierze
+// nie może zniknąć — czapka progu 180 obowiązuje tylko przy gradiencie cienia.
+do {
+    let img = makeSheet(400, 160, background: { _, _ in (240/255.0, 240/255.0, 240/255.0) }, draw: {
+        NSColor(white: 190/255.0, alpha: 1).setStroke()
+        let p = NSBezierPath(); p.lineWidth = 6; p.lineCapStyle = .round
+        p.move(to: NSPoint(x: 60, y: 80)); p.line(to: NSPoint(x: 340, y: 84)); p.stroke()
+    })
+    guard let out = SignatureProcessor.removeBackground(img) else { t.check(false, "blady tusz: nil"); throw CancellationError() }
+    let r = sigRGBA(out)
+    var ink = 0
+    for i in stride(from: 0, to: r.px.count, by: 4) where r.px[i + 3] > 120 { ink += 1 }
+    t.check(ink > 200, "blady tusz (ołówek) na równym papierze nie zniknął [\(ink) pikseli]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test bladego tuszu rzucił błąd: \(error)") }
 
 // MARK: - PreviewSignatureImport (import podpisów z Podglądu)
 

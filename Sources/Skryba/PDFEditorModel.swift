@@ -63,6 +63,8 @@ final class PDFEditorModel: ObservableObject {
     private var previewImportTimer: DispatchSourceTimer?
     private var previewImportBaseline: Data?
     private var previewImportDeadline: Date?
+    /// Trwa ekstrakcja na wątku tła — nie startuj kolejnej przy następnym tyknięciu timera.
+    private var previewImportExtracting = false
 
     init() { refreshSignatures() }
 
@@ -149,12 +151,21 @@ final class PDFEditorModel: ObservableObject {
     }
 
     /// Zdjęcie podpisu na kartce → wycięcie tła → przezroczysty podpis w bibliotece.
+    /// Wczytanie i wycięcie tła (kosztowne, do ~kilkunastu Mpx) idzie na wątek tła,
+    /// żeby nie zamrażać interfejsu; na główny wątek wracamy tylko z wynikiem.
     func importSignaturePhoto(_ url: URL) {
-        guard let img = NSImage(contentsOf: url), let cut = SignatureProcessor.removeBackground(img) else {
-            statusMessage = "Nie udało się przetworzyć zdjęcia podpisu"
-            return
+        let store = self.store
+        Task.detached(priority: .userInitiated) {
+            guard let img = NSImage(contentsOf: url), let cut = SignatureProcessor.removeBackground(img) else {
+                await MainActor.run { [weak self] in
+                    self?.statusMessage = "Nie udało się przetworzyć zdjęcia podpisu"
+                }
+                return
+            }
+            await MainActor.run { [weak self] in
+                try? store.add(cut); self?.refreshSignatures()
+            }
         }
-        try? store.add(cut); refreshSignatures()
     }
 
     func saveDrawnSignature(paths: [NSBezierPath], size: NSSize) {
@@ -171,8 +182,14 @@ final class PDFEditorModel: ObservableObject {
             statusMessage = "W schowku nie ma obrazu"
             return false
         }
-        let processed = SignatureProcessor.removeBackground(img) ?? img
-        try? store.add(processed); refreshSignatures()
+        // Wycięcie tła na wątku tła; zapis i odświeżenie z powrotem na głównym.
+        let store = self.store
+        Task.detached(priority: .userInitiated) {
+            let processed = SignatureProcessor.removeBackground(img) ?? img
+            await MainActor.run { [weak self] in
+                try? store.add(processed); self?.refreshSignatures()
+            }
+        }
         return true
     }
 
@@ -221,7 +238,11 @@ final class PDFEditorModel: ObservableObject {
         previewImportURL = nil
         previewImportBaseline = nil
         previewImportDeadline = nil
+        previewImportExtracting = false
+        // Wróć do stanu początkowego także ze stanu terminalnego .imported — inaczej zakładka
+        // „Z Podglądu" zostaje na starym komunikacie sukcesu i kolejny import jest niemożliwy.
         if previewImportState == .waiting { previewImportState = .idle }
+        else if case .imported = previewImportState { previewImportState = .idle }
     }
 
     /// Wymusza otwarcie w aplikacji Podgląd (a nie w domyślnym czytniku PDF).
@@ -260,20 +281,33 @@ final class PDFEditorModel: ObservableObject {
             return
         }
 
+        guard !previewImportExtracting else { return }   // ekstrakcja w toku — nie dubluj
         guard let current, current != previewImportBaseline else { return }
         previewImportBaseline = current
+        previewImportExtracting = true
 
-        let images = PreviewSignatureImport.extractSignatures(from: url)
-        guard !images.isEmpty else { return }   // zapis bez podpisów — czekamy dalej
+        // Ekstrakcja jest ciężka (render strony w skali 4 ≈ 8 Mpx, diff, spójne komponenty,
+        // wycinanie tła per klaster) — na wątek tła, na główny wracamy tylko z gotowym wynikiem.
+        let store = self.store
+        Task.detached(priority: .userInitiated) {
+            let images = PreviewSignatureImport.extractSignatures(from: url)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.previewImportExtracting = false
+                // Stan mógł się zmienić w międzyczasie (anulowano/timeout/nowy plik).
+                guard self.previewImportState == .waiting, self.previewImportURL == url else { return }
+                guard !images.isEmpty else { return }   // zapis bez podpisów — czekamy dalej
 
-        for image in images { try? store.add(image) }
-        refreshSignatures()
+                for image in images { try? store.add(image) }
+                self.refreshSignatures()
 
-        previewImportTimer?.cancel(); previewImportTimer = nil
-        try? FileManager.default.removeItem(at: url)
-        previewImportURL = nil
-        previewImportDeadline = nil
-        previewImportState = .imported(images.count)
+                self.previewImportTimer?.cancel(); self.previewImportTimer = nil
+                try? FileManager.default.removeItem(at: url)
+                self.previewImportURL = nil
+                self.previewImportDeadline = nil
+                self.previewImportState = .imported(images.count)
+            }
+        }
     }
 
     // MARK: - Gesty z płótna (współrzędne strony)

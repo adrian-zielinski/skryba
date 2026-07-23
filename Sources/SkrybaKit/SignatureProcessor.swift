@@ -25,7 +25,11 @@ public enum SignatureProcessor {
     public static func removeBackground(_ input: NSImage,
                                         whiteThreshold: CGFloat = 0,
                                         gain: CGFloat = 0) -> NSImage? {
-        guard let cg = input.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        guard let raw = input.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        // Ograniczenie rozdzielczości roboczej: zdjęcia z telefonu bywają 24–48 Mpx, a podpis
+        // ląduje w PDF przy ~180 pt szerokości — pełna rozdzielczość tylko zamula i zżera pamięć
+        // (kilka pełnoklatkowych buforów + splot + spójne komponenty). Skalujemy w dół dłuższy bok.
+        let cg = downscaled(raw, maxLongerSide: 2000)
         guard let base = process(cg) else { return nil }
 
         // Awaryjnie: jeśli maska pokrywa prawie cały obraz albo prawie nic, to
@@ -40,6 +44,22 @@ public enum SignatureProcessor {
             }
         }
         return base.image
+    }
+
+    /// Zmniejsza obraz tak, by dłuższy bok nie przekraczał `maxLongerSide` (zachowuje proporcje).
+    /// Mniejsze obrazy zwraca bez zmian.
+    private static func downscaled(_ cg: CGImage, maxLongerSide: Int) -> CGImage {
+        let longer = max(cg.width, cg.height)
+        guard longer > maxLongerSide else { return cg }
+        let scale = Double(maxLongerSide) / Double(longer)
+        let w = max(1, Int((Double(cg.width) * scale).rounded()))
+        let h = max(1, Int((Double(cg.height) * scale).rounded()))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return cg }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage() ?? cg
     }
 
     // MARK: - Rdzeń potoku
@@ -79,7 +99,10 @@ public enum SignatureProcessor {
         // Ograniczenie górne: przy twardej krawędzi cienia (np. ½ kartki ×0,6) rozmyte tło
         // jest tam mieszaniną obu stron, więc iloraz daje umiarkowane przyciemnienie (~0,75).
         // Tusz jest DUŻO ciemniejszy, więc czapkujemy próg — krawędzie cienia nie wchodzą do maski.
-        let threshold = min(Double(otsuThreshold(histogram, total: width * height)), 180.0)
+        // Ale czapka odcina też blady tusz (ołówek, jasny żel) na równomiernie oświetlonym
+        // papierze, więc stosujemy ją TYLKO gdy tło ma silny gradient jasności (jest cień).
+        let otsu = Double(otsuThreshold(histogram, total: width * height))
+        let threshold = backgroundLuminanceSpread(bg, count: width * height) > 40 ? min(otsu, 180.0) : otsu
         let band = 40.0                 // pasmo antyaliasingu krawędzi (skala 0–255)
         let chromaLow = 28.0, chromaHigh = 60.0   // barwność: pasmo przejściowe
 
@@ -160,6 +183,19 @@ public enum SignatureProcessor {
         }
         return Result(image: NSImage(cgImage: output, size: NSSize(width: width, height: height)),
                       coverage: coverage)
+    }
+
+    /// Rozpiętość jasności tła (papieru) po rozmyciu: max − min luminancji. Duża wartość
+    /// oznacza silny gradient oświetlenia / twardy cień; mała — papier oświetlony równomiernie.
+    private static func backgroundLuminanceSpread(_ bg: [UInt8], count: Int) -> Double {
+        var lo = 255.0, hi = 0.0
+        for p in 0..<count {
+            let i = p * 4
+            let lum = 0.299 * Double(bg[i]) + 0.587 * Double(bg[i + 1]) + 0.114 * Double(bg[i + 2])
+            if lum < lo { lo = lum }
+            if lum > hi { hi = lum }
+        }
+        return hi - lo
     }
 
     /// Znormalizowana wartość kanału (0–255): piksel / tło, obcięta do 255.

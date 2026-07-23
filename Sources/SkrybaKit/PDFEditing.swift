@@ -156,7 +156,14 @@ public enum PDFEditing {
 
         for i in 0..<doc.pageCount {
             guard let page = doc.page(at: i) else { continue }
-            var box = page.bounds(for: .mediaBox)
+            // Pudełko wyniku wg cropBox (to widzi PDFView), świadome obrotu strony (/Rotate):
+            // page.draw rysuje treść już obróconą, więc dla 90/270 pudełko musi mieć zamienione
+            // wymiary — inaczej obrócona treść trafia poza mediaBox i jest przycinana do zera.
+            let raw = page.bounds(for: .cropBox)
+            let rot = ((page.rotation % 360) + 360) % 360
+            var box = (rot == 90 || rot == 270)
+                ? CGRect(x: 0, y: 0, width: raw.height, height: raw.width)
+                : CGRect(x: 0, y: 0, width: raw.width, height: raw.height)
             let info: [String: Any] = [
                 kCGPDFContextMediaBox as String: NSData(bytes: &box, length: MemoryLayout<CGRect>.size),
             ]
@@ -165,11 +172,11 @@ public enum PDFEditing {
             // Treść strony bez adnotacji, potem adnotacje ręcznie (raz, deterministycznie).
             let annotations = page.annotations
             for a in annotations { a.shouldDisplay = false }
-            page.draw(with: .mediaBox, to: ctx)
+            page.draw(with: .cropBox, to: ctx)
             for a in annotations {
                 a.shouldDisplay = true
                 ctx.saveGState()
-                a.draw(with: .mediaBox, in: ctx)
+                a.draw(with: .cropBox, in: ctx)
                 ctx.restoreGState()
             }
             ctx.restoreGState()

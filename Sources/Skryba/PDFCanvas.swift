@@ -54,7 +54,10 @@ final class PDFEditorContainer: NSView {
     func sync() {
         guard let model else { return }
         overlay.model = model
-        overlay.tool = model.tool
+        // Przypisuj tylko przy realnej zmianie: didSet narzędzia woła deselect() dla narzędzi
+        // innych niż Wskaźnik, więc bezwarunkowe przypisanie gubiłoby zaznaczenie przy każdym
+        // odświeżeniu SwiftUI (np. bump revision po transformacji).
+        if overlay.tool != model.tool { overlay.tool = model.tool }
 
         if shownDocument !== model.document {
             shownDocument = model.document
@@ -96,6 +99,8 @@ final class ToolOverlay: NSView {
 
     private enum ActiveTransform { case move, scale(AnnotationTransform.Handle), rotate }
     private var activeTransform: ActiveTransform?
+    // Czy w trakcie tej transformacji realnie przeciągnięto myszą (a nie tylko kliknięto, by zaznaczyć).
+    private var didDragTransform = false
     // Podgląd geometrii podczas przeciągania (układ strony zaznaczonej adnotacji).
     private var previewCenter: CGPoint?
     private var previewSize: CGSize?
@@ -119,7 +124,17 @@ final class ToolOverlay: NSView {
     override var isFlipped: Bool { false }
     override var acceptsFirstResponder: Bool { true }
 
-    func documentChanged() { cachedScrollView = nil; deselect() }
+    func documentChanged() { stopObservingScroll(); cachedScrollView = nil; deselect() }
+
+    /// Przewinięcie/zoom przesuwa treść pod nakładką — przerysuj ramkę i uchwyty zaznaczenia,
+    /// bo są rysowane w stałych granicach nakładki, a hit-test liczy pozycje na żywo.
+    @objc private func overlayNeedsRedraw() { needsDisplay = true }
+
+    private func stopObservingScroll() {
+        if let clip = cachedScrollView?.contentView {
+            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: clip)
+        }
+    }
 
     private func deselect() {
         selectedAnnotation = nil; selectedPageIndex = nil; grabOffset = nil
@@ -135,6 +150,12 @@ final class ToolOverlay: NSView {
         if let sv = cachedScrollView { return sv }
         let found = Self.firstScrollView(in: pdfView)
         cachedScrollView = found
+        // Obserwuj zmiany origin contentView (przewijanie z inercją, zoom) i unieważniaj nakładkę.
+        if let clip = found?.contentView {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(overlayNeedsRedraw),
+                                                   name: NSView.boundsDidChangeNotification, object: clip)
+        }
         return found
     }
     private static func firstScrollView(in view: NSView) -> NSScrollView? {
@@ -253,6 +274,7 @@ final class ToolOverlay: NSView {
 
         if let annot = selectedAnnotation, let idx = selectedPageIndex, let active = activeTransform {
             guard let pagePoint = overlayToPage(p, pageIndex: idx) else { return }
+            didDragTransform = true
             let g = geometry(of: annot)
             switch active {
             case .move:
@@ -283,7 +305,9 @@ final class ToolOverlay: NSView {
 
     override func mouseUp(with event: NSEvent) {
         if let annot = selectedAnnotation, let idx = selectedPageIndex, let active = activeTransform {
-            commitTransform(active, annot: annot, pageIndex: idx)
+            // Commit tylko, gdy realnie przeciągnięto — samo kliknięcie (by pokazać uchwyty)
+            // nie może brudzić dokumentu ani przestemplowywać podpisu.
+            if didDragTransform { commitTransform(active, annot: annot, pageIndex: idx) }
         } else {
             switch tool {
             case .draw: commitInk()
@@ -365,11 +389,13 @@ final class ToolOverlay: NSView {
         let g = geometry(of: annot)
         grabOffset = CGSize(width: grabPage.x - g.center.x, height: grabPage.y - g.center.y)
         activeTransform = .move
+        didDragTransform = false
         previewCenter = g.center; previewSize = g.size; previewRotation = g.rotation
     }
 
     private func beginTransform(_ handle: AnnotationTransform.Handle, annot: PDFAnnotation) {
         activeTransform = handle == .rotation ? .rotate : .scale(handle)
+        didDragTransform = false
         let g = geometry(of: annot)
         previewCenter = g.center; previewSize = g.size; previewRotation = g.rotation
     }
