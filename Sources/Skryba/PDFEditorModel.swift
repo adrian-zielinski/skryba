@@ -48,6 +48,22 @@ final class PDFEditorModel: ObservableObject {
 
     let store = SignatureStore.shared
 
+    // MARK: - Import podpisów z Podglądu (Apple)
+
+    /// Stan importu z Podglądu — sterowanie widokiem arkusza.
+    enum PreviewImportState: Equatable {
+        case idle
+        case waiting
+        case imported(Int)
+        case failed(String)
+    }
+    @Published var previewImportState: PreviewImportState = .idle
+
+    private var previewImportURL: URL?
+    private var previewImportTimer: DispatchSourceTimer?
+    private var previewImportBaseline: Data?
+    private var previewImportDeadline: Date?
+
     init() { refreshSignatures() }
 
     var nsInkColor: NSColor { NSColor(inkColor) }
@@ -164,6 +180,100 @@ final class PDFEditorModel: ObservableObject {
         store.delete(url)
         if selectedSignature == url { selectedSignature = nil }
         refreshSignatures()
+    }
+
+    // MARK: - Import podpisów z Podglądu (Apple)
+
+    /// Czas, po którym rezygnujemy z obserwacji, gdy użytkownik nie zapisze zmian.
+    private let previewImportTimeout: TimeInterval = 15 * 60
+
+    /// Zapisuje szablon, otwiera go w Podglądzie i obserwuje plik; po zapisie z podpisami
+    /// wyciąga je i dodaje do biblioteki.
+    func startPreviewImport() {
+        cancelPreviewImport()
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Skryba-import-podpisow", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("Wstaw-tutaj-swoje-podpisy.pdf")
+
+        do {
+            try PreviewSignatureImport.makeImportPDF(to: url)
+        } catch {
+            previewImportState = .failed("Nie udało się przygotować pliku")
+            return
+        }
+
+        previewImportURL = url
+        previewImportBaseline = try? Data(contentsOf: url)
+        previewImportDeadline = Date().addingTimeInterval(previewImportTimeout)
+        previewImportState = .waiting
+
+        openInPreview(url)
+        startWatching(url)
+    }
+
+    /// Przerywa obserwację i sprząta plik tymczasowy.
+    func cancelPreviewImport() {
+        previewImportTimer?.cancel()
+        previewImportTimer = nil
+        if let url = previewImportURL { try? FileManager.default.removeItem(at: url) }
+        previewImportURL = nil
+        previewImportBaseline = nil
+        previewImportDeadline = nil
+        if previewImportState == .waiting { previewImportState = .idle }
+    }
+
+    /// Wymusza otwarcie w aplikacji Podgląd (a nie w domyślnym czytniku PDF).
+    private func openInPreview(_ url: URL) {
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        if let preview = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Preview") {
+            NSWorkspace.shared.open([url], withApplicationAt: preview, configuration: config, completionHandler: nil)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func startWatching(_ url: URL) {
+        let queue = DispatchQueue(label: "skryba.preview-import.watch")
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 1.0)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let current = try? Data(contentsOf: url)
+            Task { @MainActor in self.pollPreviewImport(current) }
+        }
+        previewImportTimer = timer
+        timer.resume()
+    }
+
+    /// Wywoływane co ~1 s na głównym wątku: reaguje na zmianę pliku i timeout.
+    private func pollPreviewImport(_ current: Data?) {
+        guard previewImportState == .waiting, let url = previewImportURL else { return }
+
+        if let deadline = previewImportDeadline, Date() > deadline {
+            previewImportTimer?.cancel(); previewImportTimer = nil
+            try? FileManager.default.removeItem(at: url)
+            previewImportURL = nil
+            previewImportState = .failed("Przekroczono czas oczekiwania")
+            return
+        }
+
+        guard let current, current != previewImportBaseline else { return }
+        previewImportBaseline = current
+
+        let images = PreviewSignatureImport.extractSignatures(from: url)
+        guard !images.isEmpty else { return }   // zapis bez podpisów — czekamy dalej
+
+        for image in images { try? store.add(image) }
+        refreshSignatures()
+
+        previewImportTimer?.cancel(); previewImportTimer = nil
+        try? FileManager.default.removeItem(at: url)
+        previewImportURL = nil
+        previewImportDeadline = nil
+        previewImportState = .imported(images.count)
     }
 
     // MARK: - Gesty z płótna (współrzędne strony)

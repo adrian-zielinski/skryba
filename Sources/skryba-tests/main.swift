@@ -1487,4 +1487,108 @@ do {
 catch is CancellationError {}
 catch { t.check(false, "Test przycięcia rzucił błąd: \(error)") }
 
+// MARK: - PreviewSignatureImport (import podpisów z Podglądu)
+
+t.suite("PreviewSignatureImport")
+
+// Pomocnicza: czy obraz ma realną przezroczystość (piksele alpha==0 i alpha>0).
+func alphaPresence(_ image: NSImage) -> (transparent: Bool, opaque: Bool) {
+    guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return (false, false) }
+    let w = cg.width, h = cg.height
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (false, false) }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    var hasT = false, hasO = false
+    for p in stride(from: 3, to: px.count, by: 4) {
+        if px[p] == 0 { hasT = true } else if px[p] > 200 { hasO = true }
+        if hasT && hasO { break }
+    }
+    return (hasT, hasO)
+}
+
+// Zygzak jako pojedynczy, spójny ślad (jeden komponent).
+func zigzag(x: CGFloat, y: CGFloat) -> NSBezierPath {
+    let p = NSBezierPath()
+    p.move(to: CGPoint(x: x, y: y))
+    var cx = x
+    for i in 0..<6 {
+        cx += 22
+        p.line(to: CGPoint(x: cx, y: y + (i % 2 == 0 ? 46 : -46)))
+    }
+    return p
+}
+
+// 1) Szablon: 1 strona i deterministyczny render pikselowy.
+let tplData1 = PreviewSignatureImport.makeImportPDFData()
+let tplData2 = PreviewSignatureImport.makeImportPDFData()
+if let doc1 = PDFDocument(data: tplData1), let doc2 = PDFDocument(data: tplData2) {
+    t.equal(doc1.pageCount, 1, "szablon ma 1 stronę")
+    let r1 = PreviewSignatureImport.renderForComparison(doc1, scale: 2)
+    let r2 = PreviewSignatureImport.renderForComparison(doc2, scale: 2)
+    if let r1, let r2 {
+        t.check(r1.width == r2.width && r1.height == r2.height, "szablon: zgodne wymiary renderu")
+        t.check(r1.pixels == r2.pixels, "szablon: ponowna generacja daje identyczny render pikselowy")
+    } else {
+        t.check(false, "szablon: render do pikseli nie powiódł się")
+    }
+} else {
+    t.check(false, "szablon: nie udało się zbudować PDFDocument")
+}
+
+// 2) Ścieżka A (adnotacje): ink na kopii → 1 obraz z realną przezroczystością.
+if let docA = PDFDocument(data: PreviewSignatureImport.makeImportPDFData()), let page = docA.page(at: 0) {
+    PDFEditing.addInk(paths: [zigzag(x: 150, y: 200)], to: page, color: .black, lineWidth: 2.5)
+    let sigs = PreviewSignatureImport.extractSignatures(from: docA)
+    t.equal(sigs.count, 1, "ścieżka A: jedna adnotacja → jeden podpis")
+    if let first = sigs.first {
+        let a = alphaPresence(first)
+        t.check(a.transparent && a.opaque, "ścieżka A: podpis ma realną przezroczystość (alpha==0 i alpha>0)")
+    }
+} else {
+    t.check(false, "ścieżka A: nie udało się zbudować kopii szablonu")
+}
+
+// 3) Ścieżka zapasowa (spłaszczone do treści): podpis domalowany bezpośrednio w treści
+// strony (CGContext na stronie PDF, bez adnotacji) wykryty przez różnicę pikseli.
+func flattenedWithMarks(_ centers: [CGPoint]) -> PDFDocument? {
+    let data = NSMutableData()
+    guard let consumer = CGDataConsumer(data: data as CFMutableData),
+          let tpl = PDFDocument(data: PreviewSignatureImport.makeImportPDFData())?.page(at: 0) else { return nil }
+    var box = CGRect(origin: .zero, size: PreviewSignatureImport.pageSize)
+    guard let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) else { return nil }
+
+    ctx.beginPDFPage(nil)
+    tpl.draw(with: .mediaBox, to: ctx)            // identyczna treść szablonu…
+    ctx.setStrokeColor(NSColor.black.cgColor)
+    ctx.setLineWidth(3)
+    ctx.setLineJoin(.round)
+    for c in centers {                            // …plus domalowane „podpisy"
+        ctx.beginPath()
+        ctx.move(to: CGPoint(x: c.x - 60, y: c.y))
+        var x = c.x - 60
+        for i in 0..<6 { x += 20; ctx.addLine(to: CGPoint(x: x, y: c.y + (i % 2 == 0 ? 40 : -40))) }
+        ctx.strokePath()
+    }
+    ctx.endPDFPage()
+    ctx.closePDF()
+    return PDFDocument(data: data as Data)
+}
+
+if let one = flattenedWithMarks([CGPoint(x: 250, y: 300)]) {
+    t.equal(one.page(at: 0)?.annotations.count ?? -1, 0, "zapasowa: treść bez adnotacji")
+    let sigs = PreviewSignatureImport.extractSignatures(from: one)
+    t.equal(sigs.count, 1, "zapasowa: jeden domalowany podpis → jeden obraz")
+} else {
+    t.check(false, "zapasowa: nie udało się przygotować PDF (1 podpis)")
+}
+
+if let two = flattenedWithMarks([CGPoint(x: 200, y: 300), CGPoint(x: 640, y: 300)]) {
+    let sigs = PreviewSignatureImport.extractSignatures(from: two)
+    t.equal(sigs.count, 2, "zapasowa: dwa oddalone podpisy → dwa obrazy")
+} else {
+    t.check(false, "zapasowa: nie udało się przygotować PDF (2 podpisy)")
+}
+
 t.finish()

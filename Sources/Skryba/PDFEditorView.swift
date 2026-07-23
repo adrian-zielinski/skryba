@@ -266,6 +266,7 @@ struct SignatureCreatorSheet: View {
                 Text("Wgraj obraz").tag(1)
                 Text("Zdjęcie z kartki").tag(2)
                 Text("Ze schowka").tag(3)
+                Text("Z Podglądu (Apple)").tag(4)
             }
             .pickerStyle(.segmented)
 
@@ -302,7 +303,7 @@ struct SignatureCreatorSheet: View {
                     .controlSize(.large)
                 }
                 .frame(width: 460, height: 170)
-            default:
+            case 3:
                 VStack(spacing: 10) {
                     Text("Skopiuj podpis do schowka (np. zrzut ekranu Cmd-Shift-Ctrl-4 z podpisu w Podglądzie, Notatkach czy na stronie), a tutaj wklej. Białe tło zostanie wycięte.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -312,6 +313,8 @@ struct SignatureCreatorSheet: View {
                     .controlSize(.large)
                 }
                 .frame(width: 460, height: 170)
+            default:
+                previewImport
             }
 
             HStack {
@@ -321,6 +324,45 @@ struct SignatureCreatorSheet: View {
         }
         .padding(20)
         .frame(width: 500)
+        .onDisappear { model.cancelPreviewImport() }
+        .onChange(of: model.previewImportState) { _, state in
+            if case .imported = state {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { dismiss() }
+            }
+        }
+    }
+
+    /// Zakładka „Z Podglądu (Apple)" — uczciwy most przez Podgląd do biblioteki podpisów.
+    private var previewImport: some View {
+        VStack(spacing: 12) {
+            Text("Apple trzyma Twoje podpisy z Podglądu w pęku kluczy iCloud, do którego inne aplikacje nie mają dostępu. Skryba przenosi je przez Podgląd — raz: otwórz plik, wstaw swoje podpisy narzędziem Oznaczeń i zapisz (Cmd+S). Potem masz je w bibliotece.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            switch model.previewImportState {
+            case .waiting:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Czekam na zapis w Podglądzie…").foregroundStyle(.secondary)
+                }
+                Button("Anuluj") { model.cancelPreviewImport() }
+            case .imported(let count):
+                Label("Zaimportowano \(count) \(count == 1 ? "podpis" : "podpisy/-ów")",
+                      systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .failed(let message):
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Button("Spróbuj ponownie") { model.startPreviewImport() }
+                    .controlSize(.large)
+            case .idle:
+                Button("Otwórz w Podglądzie") { model.startPreviewImport() }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .frame(width: 460, height: 170)
     }
 
     private func pickImage() -> URL? {
