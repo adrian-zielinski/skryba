@@ -4,17 +4,43 @@ import AppKit
 
 /// Adnotacja rysująca obraz (np. podpis). PDFKit nie ma natywnego „image stamp",
 /// dlatego rysujemy obraz sami; przy eksporcie jest pieczętowany (flatten).
+///
+/// Przechowuje `displaySize` (rozmiar niezrotowany) i `rotationDegrees`; `bounds` to osiowo
+/// wyrównany prostokąt opisany na obróconym prostokącie `displaySize` wokół środka. `draw`
+/// rysuje obraz z obrotem wokół środka, więc spłaszczanie (flatten woła `draw`) zachowuje obrót.
 public final class ImageStampAnnotation: PDFAnnotation {
     public let image: NSImage
-    public init(image: NSImage, bounds: CGRect) {
+    public private(set) var displaySize: CGSize
+    public private(set) var rotationDegrees: CGFloat
+
+    public init(image: NSImage, bounds: CGRect, rotationDegrees: CGFloat = 0) {
         self.image = image
+        self.displaySize = bounds.size
+        self.rotationDegrees = rotationDegrees
         super.init(bounds: bounds, forType: .stamp, withProperties: nil)
+        applyTransform(center: CGPoint(x: bounds.midX, y: bounds.midY),
+                       displaySize: bounds.size, rotationDegrees: rotationDegrees)
     }
     required init?(coder: NSCoder) { nil }
+
+    /// Środek adnotacji w układzie strony (środek AABB pokrywa się ze środkiem obrotu).
+    public var center: CGPoint { CGPoint(x: bounds.midX, y: bounds.midY) }
+
+    /// Ustaw nowy środek/rozmiar/obrót i przelicz `bounds` na AABB obróconego prostokąta.
+    public func applyTransform(center: CGPoint, displaySize: CGSize, rotationDegrees: CGFloat) {
+        self.displaySize = displaySize
+        self.rotationDegrees = rotationDegrees
+        bounds = AnnotationTransform.boundingBox(displaySize: displaySize, center: center,
+                                                 rotationDegrees: rotationDegrees)
+    }
+
     public override func draw(with box: PDFDisplayBox, in context: CGContext) {
         guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         context.saveGState()
-        context.draw(cg, in: bounds)
+        context.translateBy(x: bounds.midX, y: bounds.midY)
+        context.rotate(by: rotationDegrees * .pi / 180)
+        context.draw(cg, in: CGRect(x: -displaySize.width / 2, y: -displaySize.height / 2,
+                                    width: displaySize.width, height: displaySize.height))
         context.restoreGState()
     }
 }

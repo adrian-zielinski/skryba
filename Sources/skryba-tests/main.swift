@@ -1085,4 +1085,197 @@ if let pdfPath = ProcessInfo.processInfo.environment["SKRYBA_PDF_TEST"],
     t.skip("ustaw SKRYBA_PDF_TEST=ścieżka/do.pdf, aby przetestować realny PDF")
 }
 
+// MARK: - Transformacje adnotacji (AABB, uchwyty, obrót, skalowanie)
+
+t.suite("Transformacje adnotacji")
+
+// AABB: bez obrotu == rozmiar; przy 90° wymiary zamienione; przy 45° kwadrat rośnie.
+do {
+    let box0 = AnnotationTransform.boundingBox(displaySize: CGSize(width: 200, height: 60),
+                                               center: CGPoint(x: 100, y: 100), rotationDegrees: 0)
+    t.check(approxRect(box0, CGRect(x: 0, y: 70, width: 200, height: 60)), "AABB: obrót 0° == displaySize [\(box0)]")
+
+    let box90 = AnnotationTransform.boundingBox(displaySize: CGSize(width: 200, height: 60),
+                                                center: CGPoint(x: 100, y: 100), rotationDegrees: 90)
+    t.check(approx(box90.width, 60) && approx(box90.height, 200), "AABB: obrót 90° zamienia wymiary (60×200) [\(box90)]")
+    t.check(approx(box90.midX, 100) && approx(box90.midY, 100), "AABB: obrót wokół środka (środek bez zmian)")
+
+    let box180 = AnnotationTransform.boundingBox(displaySize: CGSize(width: 200, height: 60),
+                                                 center: CGPoint(x: 100, y: 100), rotationDegrees: 180)
+    t.check(approx(box180.width, 200) && approx(box180.height, 60), "AABB: obrót 180° == wymiary wyjściowe")
+
+    let sq45 = AnnotationTransform.boundingBox(displaySize: CGSize(width: 100, height: 100),
+                                               center: .zero, rotationDegrees: 45)
+    t.check(sq45.width > 100 && sq45.height > 100, "AABB: kwadrat przy 45° rośnie (≈141) [\(sq45.width)]")
+    t.check(approx(sq45.width, 100 * sqrt(2), 0.01), "AABB: 45° = bok·√2")
+}
+
+// Kąt obrotu z pozycji uchwytu (uchwyt w górę = 0°).
+do {
+    let c = CGPoint(x: 50, y: 50)
+    t.check(approx(AnnotationTransform.rotationDegrees(center: c, handlePoint: CGPoint(x: 50, y: 80)), 0),
+            "kąt: uchwyt w górę → 0°")
+    t.check(approx(AnnotationTransform.rotationDegrees(center: c, handlePoint: CGPoint(x: 80, y: 50)), -90),
+            "kąt: uchwyt w prawo → -90°")
+    t.check(approx(AnnotationTransform.rotationDegrees(center: c, handlePoint: CGPoint(x: 20, y: 50)), 90),
+            "kąt: uchwyt w lewo → 90°")
+    t.check(approx(abs(AnnotationTransform.rotationDegrees(center: c, handlePoint: CGPoint(x: 50, y: 20))), 180),
+            "kąt: uchwyt w dół → 180°")
+}
+
+// Przyciąganie kąta do 15° i normalizacja.
+t.check(approx(AnnotationTransform.snapAngle(7), 0), "snap 15°: 7° → 0°")
+t.check(approx(AnnotationTransform.snapAngle(8), 15), "snap 15°: 8° → 15°")
+t.check(approx(AnnotationTransform.snapAngle(37), 30), "snap 15°: 37° → 30°")
+t.check(approx(AnnotationTransform.snapAngle(38), 45), "snap 15°: 38° → 45°")
+t.check(approx(AnnotationTransform.normalizeDegrees(270), -90), "normalizacja: 270° → -90°")
+t.check(approx(AnnotationTransform.normalizeDegrees(-270), 90), "normalizacja: -270° → 90°")
+
+// Uchwyt obrotu leży nad środkiem górnej krawędzi (przy 0° prosto w górę).
+do {
+    let rp = AnnotationTransform.handlePoint(.rotation, center: CGPoint(x: 0, y: 0),
+                                             size: CGSize(width: 40, height: 40), rotationDegrees: 0, rotationArm: 26)
+    t.check(approx(rp.x, 0) && approx(rp.y, 46), "uchwyt obrotu: nad górną krawędzią (y = hh + arm)")
+}
+
+// Trafienie w uchwyt: najbliższy w promieniu, poza promieniem → nil.
+do {
+    let center = CGPoint(x: 100, y: 100), size = CGSize(width: 80, height: 80)
+    let hs: [AnnotationTransform.Handle] = [.topLeft, .topRight, .bottomLeft, .bottomRight, .rotation]
+    let br = AnnotationTransform.handlePoint(.bottomRight, center: center, size: size, rotationDegrees: 0)
+    t.equal(AnnotationTransform.hitHandle(hs, point: br, center: center, size: size, rotationDegrees: 0, radius: 10),
+            .bottomRight, "hit: trafiono narożnik dolny-prawy")
+    t.check(AnnotationTransform.hitHandle(hs, point: center, center: center, size: size, rotationDegrees: 0, radius: 10) == nil,
+            "hit: środek poza uchwytami → nil")
+}
+
+// Skalowanie swobodne: narożnik dolny-prawy, kotwica (górny-lewy) nieruchoma.
+do {
+    let r = AnnotationTransform.resize(center: CGPoint(x: 100, y: 100), size: CGSize(width: 40, height: 40),
+                                       rotationDegrees: 0, handle: .bottomRight,
+                                       toCursor: CGPoint(x: 140, y: 60), proportional: false)
+    t.check(approx(r.size.width, 60) && approx(r.size.height, 60), "skala swobodna: nowy rozmiar 60×60 [\(r.size)]")
+    t.check(approxPt(r.center, CGPoint(x: 110, y: 90)), "skala swobodna: środek przesunięty, kotwica stała [\(r.center)]")
+    // Górny-lewy narożnik (kotwica) nie drgnął.
+    let anchor = AnnotationTransform.handlePoint(.topLeft, center: r.center, size: r.size, rotationDegrees: 0)
+    t.check(approxPt(anchor, CGPoint(x: 80, y: 120)), "skala swobodna: kotwica (80,120) nieruchoma")
+}
+
+// Skalowanie proporcjonalne: zachowuje proporcje boków (2.5:1).
+do {
+    let r = AnnotationTransform.resize(center: .zero, size: CGSize(width: 100, height: 40),
+                                       rotationDegrees: 0, handle: .bottomRight,
+                                       toCursor: CGPoint(x: 150, y: -60), proportional: true)
+    t.check(approx(r.size.width / r.size.height, 2.5, 1e-4), "skala proporcjonalna: proporcje zachowane [\(r.size)]")
+    t.check(r.size.width > 100, "skala proporcjonalna: powiększenie")
+}
+
+// Minimalny rozmiar: ciągnięcie na kotwicę nie schodzi poniżej 24 pt.
+do {
+    let free = AnnotationTransform.resize(center: CGPoint(x: 100, y: 100), size: CGSize(width: 40, height: 40),
+                                          rotationDegrees: 0, handle: .bottomRight,
+                                          toCursor: CGPoint(x: 80, y: 120), proportional: false, minSize: 24)
+    t.check(free.size.width >= 24 && free.size.height >= 24, "min-size: swobodne klamruje do 24 [\(free.size)]")
+    let prop = AnnotationTransform.resize(center: .zero, size: CGSize(width: 100, height: 40),
+                                          rotationDegrees: 0, handle: .bottomRight,
+                                          toCursor: .zero, proportional: true, minSize: 24)
+    t.check(prop.size.width >= 24 && prop.size.height >= 24, "min-size: proporcjonalne klamruje oba boki [\(prop.size)]")
+}
+
+// Skalowanie krawędzią (Square): uchwyt górnej krawędzi zmienia tylko wysokość.
+do {
+    let r = AnnotationTransform.resize(center: CGPoint(x: 100, y: 100), size: CGSize(width: 40, height: 40),
+                                       rotationDegrees: 0, handle: .top,
+                                       toCursor: CGPoint(x: 100, y: 160), proportional: false)
+    t.check(approx(r.size.width, 40), "skala krawędzią: szerokość bez zmian")
+    t.check(approx(r.size.height, 80), "skala krawędzią: nowa wysokość 80")
+    t.check(approxPt(r.center, CGPoint(x: 100, y: 120)), "skala krawędzią: dolna krawędź (kotwica) stała [\(r.center)]")
+}
+
+// Skalowanie z obrotem 90°: kotwica (przeciwległy narożnik) pozostaje nieruchoma.
+do {
+    let center = CGPoint(x: 100, y: 100), size = CGSize(width: 40, height: 20)
+    let anchorBefore = AnnotationTransform.handlePoint(.topLeft, center: center, size: size, rotationDegrees: 90)
+    let cursor = CGPoint(x: 130, y: 130)
+    let r = AnnotationTransform.resize(center: center, size: size, rotationDegrees: 90,
+                                       handle: .bottomRight, toCursor: cursor, proportional: false)
+    let anchorAfter = AnnotationTransform.handlePoint(.topLeft, center: r.center, size: r.size, rotationDegrees: 90)
+    t.check(approxPt(anchorBefore, anchorAfter), "skala z obrotem 90°: kotwica nieruchoma [\(anchorBefore) → \(anchorAfter)]")
+}
+
+// MARK: - Obrót adnotacji obrazkowej i jego zachowanie przy spłaszczeniu
+
+t.suite("Obrót podpisu (flatten)")
+
+func makeSolidImage(_ color: NSColor, size: NSSize) -> NSImage {
+    let img = NSImage(size: size)
+    img.lockFocus()
+    color.setFill(); NSRect(origin: .zero, size: size).fill()
+    img.unlockFocus()
+    return img
+}
+
+// Prostokąt kolorowych pikseli (czerwień) w renderze — układ i rozmiar (do sprawdzenia obrotu).
+func redBoundingBox(_ cg: CGImage) -> CGRect? {
+    let w = cg.width, h = cg.height
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    var minX = w, minY = h, maxX = -1, maxY = -1, count = 0
+    for y in 0..<h {
+        for x in 0..<w {
+            let o = (y * w + x) * 4
+            if px[o] > 150 && px[o + 1] < 100 && px[o + 2] < 100 {
+                count += 1
+                if x < minX { minX = x }; if x > maxX { maxX = x }
+                if y < minY { minY = y }; if y > maxY { maxY = y }
+            }
+        }
+    }
+    guard count > 0, maxX >= minX, maxY >= minY else { return nil }
+    return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+}
+
+do {
+    let page = PDFPage(image: makeSolidImage(.white, size: NSSize(width: 600, height: 600)))!
+    let center = CGPoint(x: 300, y: 300)
+    let disp = CGSize(width: 200, height: 60)                       // szeroki, niski prostokąt
+    let stampImg = makeSolidImage(.red, size: NSSize(width: 200, height: 60))
+
+    // Bez obrotu: AABB == displaySize, render szeroki.
+    let flat = ImageStampAnnotation(image: stampImg,
+                                    bounds: CGRect(x: center.x - 100, y: center.y - 30, width: 200, height: 60))
+    t.check(approxRect(flat.bounds, CGRect(x: 200, y: 270, width: 200, height: 60)),
+            "flatten: bez obrotu AABB == displaySize [\(flat.bounds)]")
+
+    let docFlat = PDFDocument(); docFlat.insert(page.copy() as! PDFPage, at: 0)
+    docFlat.page(at: 0)!.addAnnotation(flat)
+    guard let dataFlat = PDFEditing.flattenedData(docFlat), let outFlat = PDFDocument(data: dataFlat),
+          let cgFlat = renderPDFPage(outFlat.page(at: 0)!), let bbFlat = redBoundingBox(cgFlat) else {
+        t.check(false, "flatten bez obrotu: render nie powiódł się"); throw CancellationError()
+    }
+    t.check(bbFlat.width > bbFlat.height, "flatten: bez obrotu render szeroki (szer > wys) [\(bbFlat)]")
+
+    // Z obrotem 90°: AABB zamienia wymiary, render wysoki — piksele NIE tam, gdzie bez obrotu.
+    let rot = ImageStampAnnotation(image: stampImg,
+                                   bounds: CGRect(x: center.x - 100, y: center.y - 30, width: 200, height: 60))
+    rot.applyTransform(center: center, displaySize: disp, rotationDegrees: 90)
+    t.check(approx(rot.bounds.width, 60) && approx(rot.bounds.height, 200),
+            "obrót 90°: AABB = 60×200 [\(rot.bounds)]")
+
+    let docRot = PDFDocument(); docRot.insert(page.copy() as! PDFPage, at: 0)
+    docRot.page(at: 0)!.addAnnotation(rot)
+    guard let dataRot = PDFEditing.flattenedData(docRot), let outRot = PDFDocument(data: dataRot),
+          let cgRot = renderPDFPage(outRot.page(at: 0)!), let bbRot = redBoundingBox(cgRot) else {
+        t.check(false, "flatten z obrotem: render nie powiódł się"); throw CancellationError()
+    }
+    t.check(bbRot.height > bbRot.width, "flatten: obrót 90° render wysoki (wys > szer) — obrót zachowany [\(bbRot)]")
+    // Powierzchnia czerwieni podobna (obrót nie ucina obrazu, tylko obraca).
+    let ratio = Double(bbRot.width * bbRot.height) / Double(max(1, bbFlat.width * bbFlat.height))
+    t.check(ratio > 0.8 && ratio < 1.25, "flatten: obrót zachowuje powierzchnię obrazu (≈1.0) [\(String(format: "%.2f", ratio))]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test obrotu podpisu rzucił błąd: \(error)") }
+
 t.finish()

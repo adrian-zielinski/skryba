@@ -104,7 +104,7 @@ struct PDFEditorView: View {
 
     private var toolHint: String {
         switch model.tool {
-        case .select: return "Kliknij nakładkę, by przesunąć • Delete usuwa"
+        case .select: return "Przeciągnij, by przesunąć • uchwyty w rogach skalują • kółko obraca (Shift co 15°) • Delete usuwa"
         case .text: return "Kliknij, by dodać tekst"
         case .draw: return "Rysuj przeciągając"
         case .whiteout: return "Przeciągnij, by zamalować"
