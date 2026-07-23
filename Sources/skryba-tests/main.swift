@@ -1278,4 +1278,213 @@ do {
 catch is CancellationError {}
 catch { t.check(false, "Test obrotu podpisu rzucił błąd: \(error)") }
 
+// MARK: - Usuwanie tła 2.0 (normalizacja oświetlenia + barwność + odszumianie)
+
+t.suite("Usuwanie tła 2.0")
+
+// Buduje obraz z pikselowym tłem (funkcja koloru) i pozwala domalować treść przez AppKit.
+// Uwaga: układ współrzędnych rysowania AppKit ma y rosnące w górę.
+func makeSheet(_ w: Int, _ h: Int,
+               background: (Int, Int) -> (CGFloat, CGFloat, CGFloat),
+               draw: (() -> Void)? = nil) -> NSImage {
+    var base = [UInt8](repeating: 0, count: w * h * 4)
+    for y in 0..<h { for x in 0..<w {
+        let (r, g, b) = background(x, y); let i = (y * w + x) * 4
+        base[i] = UInt8(max(0, min(255, r * 255))); base[i+1] = UInt8(max(0, min(255, g * 255)))
+        base[i+2] = UInt8(max(0, min(255, b * 255))); base[i+3] = 255
+    } }
+    let bctx = CGContext(data: &base, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w*4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    let baseCG = bctx.makeImage()!
+    guard let draw else { return NSImage(cgImage: baseCG, size: NSSize(width: w, height: h)) }
+    // Rysujemy w kontekście 1:1 (bez skalowania Retina z lockFocus), by rozmiary pikseli
+    // w teście były przewidywalne (pyłki 2×2 to naprawdę 4 px, nie 16).
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.draw(baseCG, in: CGRect(x: 0, y: 0, width: w, height: h))
+    let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = ns
+    draw()
+    NSGraphicsContext.restoreGraphicsState()
+    let cg = ctx.makeImage()!
+    return NSImage(cgImage: cg, size: NSSize(width: w, height: h))
+}
+
+// Rozkłada wynik na (w, h, bufor RGBA premultiplied).
+func sigRGBA(_ img: NSImage) -> (w: Int, h: Int, px: [UInt8]) {
+    let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil)!
+    let w = cg.width, h = cg.height
+    var px = [UInt8](repeating: 0, count: w*h*4)
+    let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w*4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    return (w, h, px)
+}
+
+// Czarny „podpis" na białym tle z liniowym gradientem oświetlenia 0.55→1.0 (lewo→prawo).
+do {
+    let img = makeSheet(400, 160, background: { x, _ in
+        let v = 0.55 + 0.45 * CGFloat(x) / 400.0; return (v, v, v)
+    }, draw: {
+        NSColor.black.setStroke()
+        let p = NSBezierPath(); p.lineWidth = 4; p.lineCapStyle = .round
+        p.move(to: NSPoint(x: 60, y: 80))
+        p.curve(to: NSPoint(x: 340, y: 80), controlPoint1: NSPoint(x: 150, y: 150), controlPoint2: NSPoint(x: 250, y: 10))
+        p.stroke()
+    })
+    guard let out = SignatureProcessor.removeBackground(img) else { t.check(false, "gradient: nil"); throw CancellationError() }
+    let r = sigRGBA(out)
+    // Margines 8 px wokół zawartości to na pewno papier → musi być w 100% przezroczysty.
+    var ringMaxAlpha: UInt8 = 0
+    for y in 0..<r.h { for x in 0..<r.w where (x < 6 || x >= r.w - 6 || y < 6 || y >= r.h - 6) {
+        ringMaxAlpha = max(ringMaxAlpha, r.px[(y * r.w + x) * 4 + 3])
+    } }
+    t.equal(Int(ringMaxAlpha), 0, "gradient: tło (margines) w 100% przezroczyste — maks. alpha tła == 0")
+    var opaque = 0, opaqueDark = 0, transparent = 0
+    for i in stride(from: 0, to: r.px.count, by: 4) {
+        let a = r.px[i+3]
+        if a == 0 { transparent += 1 }
+        if a > 200 {
+            opaque += 1
+            let lum = 0.299*Double(r.px[i]) + 0.587*Double(r.px[i+1]) + 0.114*Double(r.px[i+2])
+            if lum < 90 { opaqueDark += 1 }
+        }
+    }
+    t.check(opaque > 0, "gradient: tusz kryjący (są piksele alpha>200) [\(opaque)]")
+    t.check(opaqueDark > opaque / 2, "gradient: kolor tuszu ciemny [\(opaqueDark)/\(opaque)]")
+    t.check(transparent > (r.w * r.h) / 2, "gradient: papier zniknął w większości [\(transparent)/\(r.w*r.h)]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test gradientu rzucił błąd: \(error)") }
+
+// Niebieski tusz na lekko żółtawym papierze → tusz zostaje, wynik niebieski (b > r).
+do {
+    let img = makeSheet(400, 160, background: { _, _ in (250/255.0, 245/255.0, 200/255.0) }, draw: {
+        NSColor(red: 30/255.0, green: 60/255.0, blue: 200/255.0, alpha: 1).setStroke()
+        let p = NSBezierPath(); p.lineWidth = 6; p.lineCapStyle = .round
+        p.move(to: NSPoint(x: 60, y: 80)); p.line(to: NSPoint(x: 340, y: 92)); p.stroke()
+    })
+    guard let out = SignatureProcessor.removeBackground(img) else { t.check(false, "niebieski: nil"); throw CancellationError() }
+    let r = sigRGBA(out)
+    var rSum = 0, bSum = 0, n = 0
+    for i in stride(from: 0, to: r.px.count, by: 4) where r.px[i+3] > 180 { rSum += Int(r.px[i]); bSum += Int(r.px[i+2]); n += 1 }
+    t.check(n > 0, "niebieski: tusz pozostał [\(n) pikseli]")
+    t.check(n > 0 && bSum / max(1, n) > rSum / max(1, n), "niebieski: odcień niebieski (b > r) [r=\(rSum/max(1,n)) b=\(bSum/max(1,n))]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test niebieskiego tuszu rzucił błąd: \(error)") }
+
+// Czerwona pieczątka (jasna czerwień, luminancja zbliżona do papieru) → zostaje, czerwona.
+do {
+    let img = makeSheet(400, 200, background: { _, _ in (245/255.0, 245/255.0, 245/255.0) }, draw: {
+        NSColor(red: 232/255.0, green: 96/255.0, blue: 96/255.0, alpha: 1).setStroke()
+        let ring = NSBezierPath(ovalIn: NSRect(x: 150, y: 55, width: 100, height: 90)); ring.lineWidth = 6; ring.stroke()
+        let line = NSBezierPath(); line.lineWidth = 5; line.move(to: NSPoint(x: 165, y: 100)); line.line(to: NSPoint(x: 235, y: 100)); line.stroke()
+    })
+    guard let out = SignatureProcessor.removeBackground(img) else { t.check(false, "pieczątka: nil"); throw CancellationError() }
+    let r = sigRGBA(out)
+    var reddish = 0, n = 0
+    for i in stride(from: 0, to: r.px.count, by: 4) where r.px[i+3] > 150 {
+        n += 1
+        if r.px[i] > r.px[i+1] && r.px[i] > r.px[i+2] { reddish += 1 }
+    }
+    t.check(n > 50, "pieczątka: jasna czerwień nie zniknęła [\(n) pikseli]")
+    t.check(reddish > n / 2, "pieczątka: odcień czerwony (r > g, r > b) [\(reddish)/\(n)]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test pieczątki rzucił błąd: \(error)") }
+
+// Pas cienia (lewa połowa ×0.6) pod poziomą kreską: cień znika, kreska zostaje po obu stronach.
+do {
+    let W = 400, H = 160
+    let img = makeSheet(W, H, background: { x, _ in
+        let base: CGFloat = 0.97; let v = x < W/2 ? base * 0.6 : base; return (v, v, v)
+    }, draw: {
+        NSColor.black.setStroke()
+        let p = NSBezierPath(); p.lineWidth = 6; p.move(to: NSPoint(x: 20, y: 80)); p.line(to: NSPoint(x: 380, y: 80)); p.stroke()
+    })
+    guard let out = SignatureProcessor.removeBackground(img) else { t.check(false, "cień: nil"); throw CancellationError() }
+    let r = sigRGBA(out)
+    // Papier w zacienionej połowie, z dala od kreski (górny-lewy obszar) → przezroczysty.
+    var shadowPaperMaxAlpha: UInt8 = 0
+    for y in 0..<(r.h / 3) { for x in 0..<(r.w / 3) {
+        shadowPaperMaxAlpha = max(shadowPaperMaxAlpha, r.px[(y * r.w + x) * 4 + 3])
+    } }
+    t.equal(Int(shadowPaperMaxAlpha), 0, "cień: zacieniony papier zniknął w całości [maks alpha \(shadowPaperMaxAlpha)]")
+    // Kreska ma przetrwać także w zacienionej (lewej) połowie.
+    var inkLeft = 0
+    for y in 0..<r.h { for x in 0..<(r.w / 4) where r.px[(y * r.w + x) * 4 + 3] > 150 { inkLeft += 1 } }
+    t.check(inkLeft > 0, "cień: tusz pod cieniem wykryty (normalizacja działa) [\(inkLeft)]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test cienia rzucił błąd: \(error)") }
+
+// Pyłki (odległe, małe) znikają; kropka nad „i" (przy dużym kształcie) zostaje.
+do {
+    let W = 400, H = 240
+    let dotAX = 90, dotAYtop = 40          // współrzędne AppKit (y w górę)
+    let speckXs = [300, 330, 360, 315]
+    let speckYs = [190, 200, 175, 150]
+    let img = makeSheet(W, H, background: { _, _ in (0.97, 0.97, 0.97) }, draw: {
+        NSColor.black.setFill(); NSColor.black.setStroke()
+        // Duży kształt: pionowa gruba kreska („trzon i") w dolno-lewym rejonie.
+        let stem = NSBezierPath(); stem.lineWidth = 8
+        stem.move(to: NSPoint(x: dotAX, y: 60)); stem.line(to: NSPoint(x: dotAX, y: dotAYtop + 40)); stem.stroke()
+        // Solidny blok, by na pewno był „duży" komponent.
+        NSBezierPath(rect: NSRect(x: 120, y: 60, width: 60, height: 60)).fill()
+        // Kropka nad „i": mały kwadrat 3×3 tuż nad trzonem (kilka px przerwy).
+        NSBezierPath(rect: NSRect(x: dotAX - 1, y: dotAYtop + 44, width: 3, height: 3)).fill()
+        // Odległe pyłki 2×2.
+        for k in 0..<speckXs.count {
+            NSBezierPath(rect: NSRect(x: speckXs[k], y: speckYs[k], width: 2, height: 2)).fill()
+        }
+    })
+    guard let out = SignatureProcessor.removeBackground(img) else { t.check(false, "pyłki: nil"); throw CancellationError() }
+    // Sprawdzamy w układzie obrazu (y w dół), bez przycięcia — użyjemy process bez cropu?
+    // removeBackground przycina, więc mapujemy przez OCR-owe rejony jest trudne; zamiast tego
+    // sprawdzamy globalnie: kropka daje spójny mały klaster blisko dużego (zostaje), a pyłki nie.
+    // Prościej: policz komponenty w wyniku — pyłki mają zniknąć, więc liczba drobnych klastrów mała.
+    let r = sigRGBA(out)
+    // Segmentacja wyniku (alpha>60) i zliczenie komponentów.
+    var lbl = [Int](repeating: 0, count: r.w * r.h); var cur = 0; var sizes = [0]
+    func ink(_ p: Int) -> Bool { r.px[p*4+3] > 60 }
+    var stk = [Int]()
+    for s in 0..<(r.w*r.h) where ink(s) && lbl[s] == 0 {
+        cur += 1; sizes.append(0); stk.removeAll(keepingCapacity: true); stk.append(s); lbl[s] = cur
+        while let p = stk.popLast() {
+            sizes[cur] += 1; let x = p % r.w, y = p / r.w
+            for dy in -1...1 { for dx in -1...1 where dx != 0 || dy != 0 {
+                let nx = x+dx, ny = y+dy
+                if nx>=0, nx<r.w, ny>=0, ny<r.h { let q = ny*r.w+nx; if lbl[q]==0, ink(q) { lbl[q]=cur; stk.append(q) } }
+            } }
+        }
+    }
+    // Narysowano 3 kształty do zachowania (blok, trzon, kropka) + 4 odległe pyłki do usunięcia.
+    // Po odszumianiu mają zostać dokładnie 3 komponenty — pyłki znikły, kropka i trzon przetrwały.
+    t.equal(cur, 3, "pyłki: zostały tylko 3 kształty, 4 odległe pyłki usunięte [rozmiary \(sizes.dropFirst().sorted(by: >))]")
+    // Kropka nad „i" (mały komponent blisko dużego) przetrwała — jest komponent dużo mniejszy od największego.
+    let big = sizes.max() ?? 0
+    let hasSmallSurvivor = sizes.dropFirst().contains { $0 > 0 && $0 < big / 4 }
+    t.check(hasSmallSurvivor, "pyłki: kropka nad i (mały komponent przy dużym) zachowana")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test pyłków rzucił błąd: \(error)") }
+
+// Przycięcie do zawartości: treść w środku dużego papieru → wynik wyraźnie mniejszy.
+do {
+    let W = 500, H = 500
+    let img = makeSheet(W, H, background: { _, _ in (0.98, 0.98, 0.98) }, draw: {
+        NSColor.black.setFill()
+        NSBezierPath(rect: NSRect(x: 220, y: 220, width: 60, height: 60)).fill()   // mała plamka w centrum
+    })
+    guard let out = SignatureProcessor.removeBackground(img) else { t.check(false, "przycięcie: nil"); throw CancellationError() }
+    let r = sigRGBA(out)
+    t.check(r.w < W && r.h < H, "przycięcie: wynik mniejszy od wejścia [\(r.w)x\(r.h) < \(W)x\(H)]")
+    // Zawartość ~60 px + 2×8 px marginesu ≈ 76 px; dopuszczamy zapas na antyaliasing.
+    t.check(r.w < 120 && r.h < 120, "przycięcie: ciasno wokół zawartości (~76 px) [\(r.w)x\(r.h)]")
+}
+catch is CancellationError {}
+catch { t.check(false, "Test przycięcia rzucił błąd: \(error)") }
+
 t.finish()
